@@ -1,0 +1,4 @@
+fastapi
+uvicorn[standard]
+websockets>=12
+python-dotenv

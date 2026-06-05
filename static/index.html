@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Voice Agent</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <style>
+    /* ── Deepgram design tokens ────────────────────────────────────────────── */
+    :root {
+      --dg-primary:   #13ef95;
+      --dg-secondary: #149afb;
+
+      --dg-bg-default:    #0b0b0c;
+      --dg-bg-charcoal:   #1a1a1f;
+      --dg-bg-almost-black: #050506;
+
+      --dg-border-default: #2c2c33;
+      --dg-border-pebble:  #4e4e52;
+
+      --dg-text-default:  #fbfbff;
+      --dg-text-fog:      #edede2;
+      --dg-text-muted:    #949498;
+      --dg-text-on-solid: #000000;
+
+      --dg-status-success: #12b76a;
+      --dg-status-warning: #fec84b;
+      --dg-status-danger:  #f04438;
+
+      --dg-shadow-md: 0 0.25rem 0.375rem -0.0625rem rgba(0,0,0,0.4),
+                      0 0.125rem 0.25rem  -0.0625rem rgba(0,0,0,0.3);
+      --dg-shadow-lg: 0 0.625rem 0.9375rem -0.1875rem rgba(0,0,0,0.5),
+                      0 0.25rem  0.375rem  -0.125rem  rgba(0,0,0,0.3);
+
+      --dg-radius-sm: 0.25rem;
+      --dg-radius-md: 0.5rem;
+      --dg-radius-lg: 0.75rem;
+      --dg-radius-xl: 1rem;
+
+      --dg-font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+                      Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    /* ── Reset ─────────────────────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--dg-font-sans);
+      font-size: 16px;
+      background: var(--dg-bg-default);
+      color: var(--dg-text-default);
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 1.5rem;
+    }
+
+    /* ── Wordmark ───────────────────────────────────────────────────────────── */
+    /* ── dg-card (structured variant) ──────────────────────────────────────── */
+    .dg-card {
+      width: 100%;
+      max-width: 640px;
+      background: var(--dg-bg-charcoal);
+      border: 0.125rem solid var(--dg-border-default);
+      border-radius: var(--dg-radius-xl);
+      box-shadow: var(--dg-shadow-lg);
+      display: flex;
+      flex-direction: column;
+      height: 80vh;
+      overflow: hidden;
+    }
+
+    .dg-card__header {
+      padding: 1.25rem 1.5rem;
+      border-bottom: 0.125rem solid var(--dg-border-default);
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      flex-shrink: 0;
+    }
+
+    .dg-card__header h1 {
+      font-size: 1rem;
+      font-weight: 600;
+      color: var(--dg-text-default);
+      letter-spacing: -0.01em;
+    }
+
+    .dg-card__body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1.25rem 1.5rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      scrollbar-width: thin;
+      scrollbar-color: var(--dg-border-pebble) transparent;
+    }
+
+    .dg-card__body::-webkit-scrollbar { width: 4px; }
+    .dg-card__body::-webkit-scrollbar-track { background: transparent; }
+    .dg-card__body::-webkit-scrollbar-thumb {
+      background: var(--dg-border-pebble);
+      border-radius: 2px;
+    }
+
+    .dg-card__footer {
+      padding: 1.25rem 1.5rem;
+      border-top: 0.125rem solid var(--dg-border-default);
+      display: flex;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    /* ── Interim-results toggle ───────────────────────────────────────────────── */
+    .dg-toggle {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      cursor: pointer;
+      user-select: none;
+    }
+
+    .dg-toggle__label {
+      font-size: 0.8125rem;
+      color: var(--dg-text-muted);
+    }
+
+    .dg-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+
+    .dg-toggle__track {
+      position: relative;
+      width: 2.25rem;
+      height: 1.25rem;
+      border-radius: 50rem;
+      background: var(--dg-border-pebble);
+      transition: background 0.15s;
+      flex-shrink: 0;
+    }
+
+    .dg-toggle__thumb {
+      position: absolute;
+      top: 0.1875rem;
+      left: 0.1875rem;
+      width: 0.875rem;
+      height: 0.875rem;
+      border-radius: 50%;
+      background: var(--dg-text-default);
+      transition: transform 0.15s;
+    }
+
+    .dg-toggle input:checked + .dg-toggle__track {
+      background: var(--dg-primary);
+    }
+    .dg-toggle input:checked + .dg-toggle__track .dg-toggle__thumb {
+      transform: translateX(1rem);
+      background: var(--dg-text-on-solid);
+    }
+
+    .dg-toggle input:focus-visible + .dg-toggle__track {
+      outline: 2px solid var(--dg-secondary);
+      outline-offset: 2px;
+    }
+
+    .dg-toggle.disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    /* ── Status indicator ───────────────────────────────────────────────────── */
+    .dg-conn-status {
+      margin-left: 1rem;
+      display: flex;
+      align-items: center;
+      gap: 0.375rem;
+      font-size: 0.8125rem;
+      color: var(--dg-text-muted);
+    }
+
+    .dg-conn-status__dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--dg-border-pebble);
+      flex-shrink: 0;
+      transition: background 0.3s;
+    }
+
+    .dg-conn-status__dot.connected  { background: var(--dg-status-success); }
+    .dg-conn-status__dot.listening  { background: var(--dg-status-warning); animation: dg-pulse 1.2s ease-in-out infinite; }
+    .dg-conn-status__dot.speaking   { background: var(--dg-secondary);      animation: dg-pulse 1.2s ease-in-out infinite; }
+
+    @keyframes dg-pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50%       { opacity: 0.4; transform: scale(0.85); }
+    }
+
+    /* ── Transcript messages ────────────────────────────────────────────────── */
+    .empty-hint {
+      color: var(--dg-text-muted);
+      font-size: 0.875rem;
+      text-align: center;
+      margin: auto;
+      line-height: 1.6;
+    }
+
+    .message {
+      display: flex;
+      flex-direction: column;
+      max-width: 80%;
+    }
+
+    .message.user      { align-self: flex-end;  align-items: flex-end; }
+    .message.assistant { align-self: flex-start; align-items: flex-start; }
+
+    .message-label {
+      font-size: 0.6875rem;
+      font-weight: 500;
+      color: var(--dg-text-muted);
+      margin-bottom: 0.25rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .bubble {
+      padding: 0.625rem 0.875rem;
+      border-radius: var(--dg-radius-lg);
+      font-size: 0.9375rem;
+      line-height: 1.55;
+    }
+
+    .message.user .bubble {
+      background: var(--dg-primary);
+      color: var(--dg-text-on-solid);
+      border-bottom-right-radius: var(--dg-radius-sm);
+      font-weight: 500;
+    }
+
+    .message.assistant .bubble {
+      background: var(--dg-bg-almost-black);
+      color: var(--dg-text-fog);
+      border: 0.125rem solid var(--dg-border-default);
+      border-bottom-left-radius: var(--dg-radius-sm);
+    }
+
+    /* Live (interim) transcript — dimmed + italic until the turn is finalized. */
+    .message.interim .bubble {
+      opacity: 0.55;
+      font-style: italic;
+    }
+
+    /* ── dg-btn ─────────────────────────────────────────────────────────────── */
+    .dg-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 0.625rem 1.75rem;
+      border-radius: 50rem;
+      border: 0.125rem solid transparent;
+      font-family: var(--dg-font-sans);
+      font-size: 0.9375rem;
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+      transition: background 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s;
+      white-space: nowrap;
+    }
+
+    .dg-btn--primary {
+      background: var(--dg-primary);
+      color: var(--dg-text-on-solid);
+      border-color: var(--dg-primary);
+    }
+    .dg-btn--primary:hover:not(:disabled) {
+      background: #0fdb85;
+      border-color: #0fdb85;
+    }
+
+    .dg-btn--danger-ghost {
+      background: transparent;
+      color: var(--dg-status-danger);
+      border-color: var(--dg-status-danger);
+    }
+    .dg-btn--danger-ghost:hover:not(:disabled) {
+      background: rgba(240, 68, 56, 0.1);
+    }
+
+    .dg-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    /* ── Mic icon (SVG inline) ──────────────────────────────────────────────── */
+    .dg-btn svg {
+      width: 1em;
+      height: 1em;
+      flex-shrink: 0;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Main card -->
+  <div class="dg-card">
+    <div class="dg-card__header">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--dg-primary)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+        <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+        <line x1="12" y1="19" x2="12" y2="23"/>
+        <line x1="8" y1="23" x2="16" y2="23"/>
+      </svg>
+      <h1>Voice Agent</h1>
+      <label class="dg-toggle" id="interimWrap" title="Show live interim transcripts as you speak (applies on next start)">
+        <input type="checkbox" id="interimToggle" />
+        <span class="dg-toggle__track"><span class="dg-toggle__thumb"></span></span>
+        <span class="dg-toggle__label">Interim</span>
+      </label>
+      <div class="dg-conn-status">
+        <div class="dg-conn-status__dot" id="dot"></div>
+        <span id="statusText">Disconnected</span>
+      </div>
+    </div>
+
+    <div class="dg-card__body" id="transcript">
+      <p class="empty-hint" id="hint">Start a conversation to see the transcript.</p>
+    </div>
+
+    <div class="dg-card__footer">
+      <button class="dg-btn dg-btn--primary" id="btn" onclick="toggle()">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+        </svg>
+        Start Conversation
+      </button>
+    </div>
+  </div>
+
+  <script>
+    // AudioWorklet processor — captures mic audio as PCM16 at the context's sample rate
+    const PROCESSOR_SRC = `
+class PCMProcessor extends AudioWorkletProcessor {
+  process(inputs) {
+    const ch = inputs[0]?.[0];
+    if (ch?.length) {
+      const out = new Int16Array(ch.length);
+      for (let i = 0; i < ch.length; i++) {
+        const s = Math.max(-1, Math.min(1, ch[i]));
+        out[i] = s < 0 ? s * 32768 : s * 32767;
+      }
+      this.port.postMessage(out.buffer, [out.buffer]);
+    }
+    return true;
+  }
+}
+registerProcessor('pcm-processor', PCMProcessor);
+`;
+
+    const OUTPUT_SR = 24000; // must match AGENT_SETTINGS output.sample_rate in main.py
+
+    let ws         = null;
+    let inputCtx   = null; // 16 kHz — for mic capture
+    let outputCtx  = null; // system rate — for agent audio playback
+    let micStream  = null;
+    let worklet    = null;
+    let nextPlay   = 0;
+    let sources    = [];
+    let running    = false;
+
+    // ── UI helpers ──────────────────────────────────────────────────────────
+
+    function setStatus(state, text) {
+      document.getElementById('dot').className = 'dg-conn-status__dot ' + state;
+      document.getElementById('statusText').textContent = text;
+    }
+
+    function scrollTranscript() {
+      const t = document.getElementById('transcript');
+      t.scrollTop = t.scrollHeight;
+    }
+
+    function addMessage(role, content) {
+      const hint = document.getElementById('hint');
+      if (hint) hint.remove();
+
+      const t = document.getElementById('transcript');
+      const div = document.createElement('div');
+      div.className = `message ${role}`;
+      div.innerHTML = `
+        <div class="message-label">${role === 'user' ? 'You' : 'Agent'}</div>
+        <div class="bubble">${esc(content)}</div>
+      `;
+      t.appendChild(div);
+      scrollTranscript();
+      return div;
+    }
+
+    // ── Live user transcript (Flux) ───────────────────────────────────────────
+    // Flux TurnInfo events drive an interim bubble that updates as you speak and
+    // is finalized on EndOfTurn. `transcript` is the cumulative text of the turn.
+
+    let interimEl = null;     // the in-progress user bubble, if any
+    let fluxInterim = false;  // actual interim state, from the proxy's ProxyConfig
+
+    // ── Interim-results toggle (persisted; default seeded from the server) ────
+    const interimToggle = document.getElementById('interimToggle');
+    const interimWrap   = document.getElementById('interimWrap');
+
+    (async function initToggle() {
+      let pref = localStorage.getItem('interimPref');
+      if (pref === null) {
+        try {
+          const cfg = await fetch('/config').then(r => r.json());
+          pref = cfg.fluxInterimDefault ? '1' : '0';
+        } catch (_) { pref = '0'; }
+      }
+      interimToggle.checked = pref === '1';
+    })();
+
+    interimToggle.addEventListener('change', () => {
+      localStorage.setItem('interimPref', interimToggle.checked ? '1' : '0');
+    });
+
+    function setToggleEnabled(enabled) {
+      interimToggle.disabled = !enabled;
+      interimWrap.classList.toggle('disabled', !enabled);
+    }
+
+    function ensureInterimBubble() {
+      if (!interimEl) {
+        interimEl = addMessage('user', '');
+        interimEl.classList.add('interim');
+      }
+      return interimEl;
+    }
+
+    function handleFlux(ev) {
+      const text = (ev.transcript || '').trim();
+      switch (ev.event) {
+        case 'StartOfTurn':
+        case 'Update':
+        case 'EagerEndOfTurn':
+        case 'TurnResumed':
+          if (!text) break;
+          ensureInterimBubble().querySelector('.bubble').textContent = text;
+          scrollTranscript();
+          break;
+        case 'EndOfTurn':
+          if (!interimEl && !text) break;
+          const el = ensureInterimBubble();
+          if (text) el.querySelector('.bubble').textContent = text;
+          el.classList.remove('interim'); // solidify into a final user message
+          interimEl = null;
+          scrollTranscript();
+          break;
+      }
+    }
+
+    function esc(s) {
+      return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    }
+
+    // ── Audio playback ───────────────────────────────────────────────────────
+
+    function playChunk(buf) {
+      const i16 = new Int16Array(buf);
+      if (!i16.length) return;
+      const f32 = new Float32Array(i16.length);
+      for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768.0;
+
+      const ab = outputCtx.createBuffer(1, f32.length, OUTPUT_SR);
+      ab.getChannelData(0).set(f32);
+
+      const src = outputCtx.createBufferSource();
+      src.buffer = ab;
+      src.connect(outputCtx.destination);
+      sources.push(src);
+      src.onended = () => { sources = sources.filter(x => x !== src); };
+
+      const now = outputCtx.currentTime;
+      if (nextPlay < now) nextPlay = now;
+      src.start(nextPlay);
+      nextPlay += ab.duration;
+    }
+
+    function stopPlayback() {
+      sources.forEach(s => { try { s.stop(); } catch (_) {} });
+      sources = [];
+      nextPlay = 0;
+    }
+
+    // ── Event handler ────────────────────────────────────────────────────────
+
+    function handleEvent(ev) {
+      switch (ev.type) {
+        case 'ProxyConfig':
+          fluxInterim = !!ev.fluxInterim;
+          break;
+        case 'FluxTurnInfo':
+          handleFlux(ev);
+          break;
+        case 'ConversationText':
+          // When Flux interim is on, user turns are shown live (interim → final),
+          // so skip the agent's duplicate. Otherwise render the agent's transcript.
+          if (ev.role === 'user' && fluxInterim) break;
+          addMessage(ev.role, ev.content);
+          break;
+        case 'UserStartedSpeaking':
+          setStatus('listening', 'Listening...');
+          stopPlayback();
+          break;
+        case 'AgentStartedSpeaking':
+          setStatus('speaking', 'Agent speaking...');
+          break;
+        case 'AgentAudioDone':
+          setStatus('connected', 'Connected');
+          break;
+        case 'Error':
+          console.error('Agent error:', ev.description);
+          setStatus('connected', `Error: ${ev.description}`);
+          break;
+      }
+    }
+
+    // ── Session lifecycle ────────────────────────────────────────────────────
+
+    async function start() {
+      running = true;
+      const btn = document.getElementById('btn');
+      btn.disabled = true;
+      setToggleEnabled(false); // locked for the duration of the session
+
+      // Mic capture context at 16 kHz
+      inputCtx = new AudioContext({ sampleRate: 16000 });
+
+      const blob = new Blob([PROCESSOR_SRC], { type: 'application/javascript' });
+      const url = URL.createObjectURL(blob);
+      await inputCtx.audioWorklet.addModule(url);
+      URL.revokeObjectURL(url);
+
+      micStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      const micSrc = inputCtx.createMediaStreamSource(micStream);
+      worklet = new AudioWorkletNode(inputCtx, 'pcm-processor');
+      worklet.port.onmessage = (e) => {
+        if (ws?.readyState === WebSocket.OPEN) ws.send(e.data);
+      };
+      micSrc.connect(worklet);
+
+      // Playback context at system rate (browser resamples from OUTPUT_SR)
+      outputCtx = new AudioContext();
+
+      const interim = interimToggle.checked ? 1 : 0;
+      ws = new WebSocket(`ws://${location.host}/ws?interim=${interim}`);
+      ws.binaryType = 'arraybuffer';
+
+      ws.onopen = () => {
+        setStatus('connected', 'Connected');
+        btn.innerHTML = `
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
+          </svg>
+          Stop Conversation`;
+        btn.className = 'dg-btn dg-btn--danger-ghost';
+        btn.disabled = false;
+      };
+
+      ws.onmessage = (e) => {
+        if (e.data instanceof ArrayBuffer) {
+          playChunk(e.data);
+        } else {
+          handleEvent(JSON.parse(e.data));
+        }
+      };
+
+      ws.onclose = () => { if (running) stop(); };
+      ws.onerror = (e) => console.error('WS error', e);
+    }
+
+    function stop() {
+      running = false;
+      ws?.close();        ws = null;
+      worklet?.disconnect(); worklet = null;
+      micStream?.getTracks().forEach(t => t.stop()); micStream = null;
+      inputCtx?.close();  inputCtx = null;
+      outputCtx?.close(); outputCtx = null;
+      stopPlayback();
+      interimEl = null;
+      fluxInterim = false;
+      setToggleEnabled(true);
+
+      setStatus('', 'Disconnected');
+      const btn = document.getElementById('btn');
+      btn.innerHTML = `
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+        </svg>
+        Start Conversation`;
+      btn.className = 'dg-btn dg-btn--primary';
+      btn.disabled = false;
+    }
+
+    function toggle() {
+      if (!running) start(); else stop();
+    }
+  </script>
+</body>
+</html>
