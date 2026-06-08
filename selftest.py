@@ -24,8 +24,8 @@ import urllib.request
 import websockets
 from dotenv import load_dotenv
 
-from agents import AGENTS, ENTRY, THINK_PROVIDER, LISTEN_MODEL, call_business_function
-from orchestrator import MultiAgentOrchestrator
+from agents import AGENTS, ENTRY, THINK_PROVIDER, LISTEN_MODEL
+from orchestrator import Orchestrator
 
 load_dotenv()
 KEY = os.environ["DEEPGRAM_API_KEY"]
@@ -67,12 +67,11 @@ async def main(smoke: bool) -> None:
 
         async def notify(o):
             transfers.append(o)
-            print(f"  >> AgentSwitched -> {o.get('label')} ({o.get('reason')})")
+            print(f"  >> AgentSwitched -> {o.get('agent')} ({o.get('reason')})")
 
-        orch = MultiAgentOrchestrator(
-            AGENTS, ENTRY, send, notify=notify,
+        orch = Orchestrator(
+            AGENTS, entry=ENTRY, send=send, notify=notify,
             think_provider=THINK_PROVIDER, listen_model=LISTEN_MODEL,
-            business_handler=call_business_function,
         )
         await send(orch.initial_settings(AUDIO))
 
@@ -169,7 +168,7 @@ async def main(smoke: bool) -> None:
     print("SUMMARY")
     fn_calls = [f.get("name") for e in events if e.get("type") == "FunctionCallRequest" for f in e.get("functions", [])]
     assistant = " ".join(e["content"] for e in events if e.get("type") == "ConversationText" and e["role"] == "assistant").lower()
-    print(f"  transfers fired      : {[t.get('label') for t in transfers]}")
+    print(f"  transfers fired      : {[t.get('agent') for t in transfers]}")
     print(f"  function calls       : {fn_calls}")
     print(f"  ThinkUpdated seen    : {any(e.get('type') == 'ThinkUpdated' for e in events)}")
     print(f"  SpeakUpdated seen    : {any(e.get('type') == 'SpeakUpdated' for e in events)}")

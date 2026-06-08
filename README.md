@@ -79,9 +79,36 @@ Three personas share one WebSocket session:
 | `billing` | `aura-2-thalia-en` | Balances, charges, refunds (`get_account_balance`) |
 | `tech` | `aura-2-orion-en` | Troubleshooting (`run_diagnostic`) |
 
-When an agent calls the `transfer_to_agent` tool, the session is **reconfigured
-in place** — the WebSocket is never torn down and the conversation history
-carries across automatically, so there's no reconnect and no summarization step.
+Personas are declared with a typed API (`agents.py`); the orchestrator derives
+the `transfer_to_agent` tool and routing from each agent's `transfers_to` edges:
+
+```python
+from orchestrator import Agent, Tool, Orchestrator
+
+triage = Agent(
+    name="triage", voice="aura-2-asteria-en", prompt="You are the front desk...",
+    greeting="Hi, thanks for calling Acme Support!",
+    transfers_to={"billing": "charges, balances, refunds",
+                  "tech": "login/connectivity issues, errors"},
+)
+billing = Agent(
+    name="billing", voice="aura-2-thalia-en", prompt="You are a billing specialist...",
+    greeting="Hi, I'm the billing specialist...",
+    tools=[Tool("get_account_balance", "Look up the balance.",
+                {"type": "object", "properties": {}}, get_account_balance)],
+    transfers_to={"triage": "anything not billing-related"},
+)
+
+orch = Orchestrator([triage, billing, tech], entry="triage",
+                    send=send, think_provider={"type": "open_ai", "model": "gpt-4o-mini"})
+await send(orch.initial_settings(audio))   # then feed every DG event to orch.handle()
+```
+
+When an agent calls `transfer_to_agent`, the session is **reconfigured in
+place** — the WebSocket is never torn down and the conversation history carries
+across automatically, so there's no reconnect and no summarization step.
+(Verified end-to-end in `selftest.py`: a name given to the front desk is
+recalled by billing after the swap.)
 
 The handoff sequence (in `orchestrator.py`):
 
@@ -96,11 +123,14 @@ FunctionCallRequest(transfer_to_agent)
 
 ### Files
 
-- **`agents.py`** — the personas (prompt, tools, voice, greeting). User config.
-- **`orchestrator.py`** — `MultiAgentOrchestrator`: owns the transfer handshake
-  above. This is the reusable piece — a candidate to live in the Deepgram SDK.
+- **`agents.py`** — the personas, declared with `Agent` / `Tool`. User config.
+- **`orchestrator.py`** — `Agent`, `Tool`, `Orchestrator`: the typed surface plus
+  the transfer-handshake engine. This is the reusable piece — a candidate to live
+  in the Deepgram SDK.
 - **`main.py`** — the proxy: pipes audio and feeds Deepgram events to the
   orchestrator.
+- **`selftest.py`** — mic-free end-to-end test (TTS-synthesized user speech).
+  Run: `../.venv/bin/python selftest.py` (or `selftest.py smoke`).
 
 Try it: start with a billing question ("what's my balance?") and the front desk
 hands you to billing in a different voice; then mention a login problem and

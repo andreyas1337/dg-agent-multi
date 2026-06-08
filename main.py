@@ -9,8 +9,8 @@ from fastapi.staticfiles import StaticFiles
 import websockets
 from dotenv import load_dotenv
 
-from agents import AGENTS, ENTRY, THINK_PROVIDER, LISTEN_MODEL, call_business_function
-from orchestrator import MultiAgentOrchestrator
+from agents import AGENTS, ENTRY, THINK_PROVIDER, LISTEN_MODEL
+from orchestrator import Orchestrator
 
 load_dotenv()
 
@@ -31,7 +31,7 @@ ENABLE_FLUX_INTERIM = os.environ.get("ENABLE_FLUX_INTERIM", "false").lower() in 
 # encoding/sample_rate must match the agent's audio.input settings below.
 FLUX_URL = (
     "wss://api.deepgram.com/v2/listen"
-    "?model=flux-general-en&encoding=linear16&sample_rate=16000"
+    "?model=flux-general-multi&encoding=linear16&sample_rate=16000"
 )
 
 # Audio I/O is a property of the transport (this browser proxy), not the agent —
@@ -81,14 +81,13 @@ async def agent_proxy(websocket: WebSocket):
                     await websocket.send_text(json.dumps(obj))
 
             # The orchestrator owns multi-agent transfers over this one socket.
-            orch = MultiAgentOrchestrator(
-                agents=AGENTS,
+            orch = Orchestrator(
+                AGENTS,
                 entry=ENTRY,
                 send=dg_send,
                 notify=notify_browser,
                 think_provider=THINK_PROVIDER,
                 listen_model=LISTEN_MODEL,
-                business_handler=call_business_function,
             )
             await dg_send(orch.initial_settings(AUDIO))
 
