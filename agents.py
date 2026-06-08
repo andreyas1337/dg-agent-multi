@@ -126,7 +126,8 @@ AGENTS: dict[str, dict] = {
             "You are a billing specialist at Acme Support. Help the customer with "
             "charges, balances, and refunds. Use get_account_balance when they ask "
             "about their balance. If they bring up a technical problem instead, "
-            "transfer them back to the front desk. Keep replies concise."
+            "transfer them back to the front desk. Answer the customer's questions "
+            "directly, including about details they mentioned earlier. Keep replies concise."
         ),
         "functions": [
             GET_BALANCE,
