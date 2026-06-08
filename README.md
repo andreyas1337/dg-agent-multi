@@ -4,11 +4,15 @@ A minimal FastAPI app that serves a web page and proxies audio between the
 browser and Deepgram's [Voice Agent API](https://developers.deepgram.com/docs/voice-agent)
 over a WebSocket.
 
-The agent is configured in `main.py`:
+> **`multi` branch:** this branch turns the single agent into a **multi-agent**
+> system (front desk → billing / technical support) using in-place transfers.
+> See [Multi-agent transfers](#multi-agent-transfers) below.
+
+The agents are configured in `agents.py`:
 
 - **Listen:** Deepgram `nova-3` (speech-to-text)
 - **Think:** OpenAI `gpt-4o-mini`
-- **Speak:** Deepgram `aura-2-asteria-en` (text-to-speech)
+- **Speak:** Deepgram Aura-2, a different voice per persona
 
 ## Prerequisites
 
@@ -64,6 +68,43 @@ uvicorn main:app --reload --port 8000
   in both directions.
 - Audio I/O: 16 kHz linear16 input from the browser, 24 kHz linear16 output
   from the agent.
+
+## Multi-agent transfers
+
+Three personas share one WebSocket session:
+
+| Agent | Voice | Role |
+|-------|-------|------|
+| `triage` (entry) | `aura-2-asteria-en` | Front desk; routes the caller |
+| `billing` | `aura-2-thalia-en` | Balances, charges, refunds (`get_account_balance`) |
+| `tech` | `aura-2-orion-en` | Troubleshooting (`run_diagnostic`) |
+
+When an agent calls the `transfer_to_agent` tool, the session is **reconfigured
+in place** — the WebSocket is never torn down and the conversation history
+carries across automatically, so there's no reconnect and no summarization step.
+
+The handoff sequence (in `orchestrator.py`):
+
+```
+FunctionCallRequest(transfer_to_agent)
+  → FunctionCallResponse(transferring)
+  → UpdateThink(new prompt + tools)   → await ThinkUpdated
+  → UpdateSpeak(new voice)            → await SpeakUpdated
+  → wait for AgentAudioDone (≤1.5s)   ← lets the outgoing line finish
+  → InjectAgentMessage(greeting)      → retry if agent is still speaking
+```
+
+### Files
+
+- **`agents.py`** — the personas (prompt, tools, voice, greeting). User config.
+- **`orchestrator.py`** — `MultiAgentOrchestrator`: owns the transfer handshake
+  above. This is the reusable piece — a candidate to live in the Deepgram SDK.
+- **`main.py`** — the proxy: pipes audio and feeds Deepgram events to the
+  orchestrator.
+
+Try it: start with a billing question ("what's my balance?") and the front desk
+hands you to billing in a different voice; then mention a login problem and
+billing hands you to tech.
 
 ## Live (interim) transcripts via Flux
 

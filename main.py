@@ -9,6 +9,9 @@ from fastapi.staticfiles import StaticFiles
 import websockets
 from dotenv import load_dotenv
 
+from agents import AGENTS, ENTRY, THINK_PROVIDER, LISTEN_MODEL, call_business_function
+from orchestrator import MultiAgentOrchestrator
+
 load_dotenv()
 
 DEEPGRAM_API_KEY = os.environ["DEEPGRAM_API_KEY"]
@@ -31,20 +34,12 @@ FLUX_URL = (
     "?model=flux-general-en&encoding=linear16&sample_rate=16000"
 )
 
-AGENT_SETTINGS = {
-    "type": "Settings",
-    "audio": {
-        "input": {"encoding": "linear16", "sample_rate": 16000},
-        "output": {"encoding": "linear16", "sample_rate": 24000, "container": "none"},
-    },
-    "agent": {
-        "listen": {"provider": {"type": "deepgram", "model": "nova-3"}},
-        "think": {
-            "provider": {"type": "open_ai", "model": "gpt-4o-mini"},
-            "prompt": "You are a helpful assistant.",
-        },
-        "speak": {"provider": {"type": "deepgram", "model": "aura-2-asteria-en"}},
-    },
+# Audio I/O is a property of the transport (this browser proxy), not the agent —
+# so it lives here and the orchestrator stamps the per-agent prompt/voice/tools on
+# top of it. Flux's encoding/sample_rate must match audio.input below.
+AUDIO = {
+    "input": {"encoding": "linear16", "sample_rate": 16000},
+    "output": {"encoding": "linear16", "sample_rate": 24000, "container": "none"},
 }
 
 app = FastAPI()
@@ -71,7 +66,31 @@ async def agent_proxy(websocket: WebSocket):
     flux_ws = None
     try:
         async with websockets.connect(DG_AGENT_URL, additional_headers=headers) as dg_ws:
-            await dg_ws.send(json.dumps(AGENT_SETTINGS))
+            # Serialize all writes to the Deepgram socket: the browser audio pump,
+            # the orchestrator's handshake messages, and its retry/inject tasks all
+            # send concurrently, and websockets doesn't allow concurrent send().
+            dg_send_lock = asyncio.Lock()
+
+            async def dg_send(obj):
+                data = obj if isinstance(obj, (bytes, bytearray, str)) else json.dumps(obj)
+                async with dg_send_lock:
+                    await dg_ws.send(data)
+
+            async def notify_browser(obj):
+                with suppress(Exception):
+                    await websocket.send_text(json.dumps(obj))
+
+            # The orchestrator owns multi-agent transfers over this one socket.
+            orch = MultiAgentOrchestrator(
+                agents=AGENTS,
+                entry=ENTRY,
+                send=dg_send,
+                notify=notify_browser,
+                think_provider=THINK_PROVIDER,
+                listen_model=LISTEN_MODEL,
+                business_handler=call_business_function,
+            )
+            await dg_send(orch.initial_settings(AUDIO))
 
             # Best-effort: open Flux for interim transcripts when the client asked
             # for them. If it fails (e.g. the key lacks access), the agent still
@@ -95,7 +114,7 @@ async def agent_proxy(websocket: WebSocket):
                     while True:
                         msg = await websocket.receive()
                         if "bytes" in msg and msg["bytes"]:
-                            await dg_ws.send(msg["bytes"])
+                            await dg_send(msg["bytes"])
                             if flux_ws is not None:
                                 with suppress(Exception):
                                     await flux_ws.send(msg["bytes"])
@@ -108,6 +127,10 @@ async def agent_proxy(websocket: WebSocket):
                         if isinstance(msg, bytes):
                             await websocket.send_bytes(msg)
                         else:
+                            # Drive the orchestrator (handles transfers), then
+                            # relay the raw event to the browser for display.
+                            with suppress(Exception):
+                                await orch.handle(json.loads(msg))
                             await websocket.send_text(msg)
                 except Exception:
                     pass
