@@ -72,7 +72,7 @@ async def main(smoke: bool) -> None:
 
         async def notify(o):
             transfers.append(o)
-            print(f"  >> AgentSwitched -> {o.get('agent')} ({o.get('reason')})")
+            print(f"  >> AgentActive -> {o.get('agent')} [{o.get('voice')}] ({o.get('reason')})")
 
         orch = Orchestrator(
             AGENTS, entry=ENTRY, send=send, notify=notify,

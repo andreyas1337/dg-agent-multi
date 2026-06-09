@@ -135,6 +135,11 @@ class Orchestrator:
         self._target: Optional[str] = None
         self._pending_call_id: Optional[str] = None
 
+    @property
+    def voice_now(self) -> str:
+        """The TTS voice currently playing (for UI display)."""
+        return self._voice_now
+
     def _validate_edges(self) -> None:
         for a in self._agents.values():
             for target in a.transfers_to:
@@ -261,7 +266,11 @@ class Orchestrator:
         # own prompt.
         await self.send({"type": "UpdateThink", "think": self._think_for(agent)})
         if self.notify:
-            await self.notify({"type": "AgentSwitched", "agent": target, "reason": args.get("reason", "")})
+            # Voice the caller will hear after this hop (target's own, or inherited).
+            await self.notify(
+                {"type": "AgentActive", "agent": target, "voice": agent.voice or self._voice_now,
+                 "reason": args.get("reason", "")}
+            )
 
     async def _finalize_transfer(self) -> None:
         await self._respond(self._pending_call_id, _TRANSFER_TOOL, {"status": "transferring"})

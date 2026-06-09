@@ -172,6 +172,39 @@
       cursor: not-allowed;
     }
 
+    /* ── Active-agent badge ───────────────────────────────────────────────────── */
+    .dg-agent-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      margin-left: 0.5rem;
+      padding: 0.2rem 0.6rem;
+      border-radius: 50rem;
+      background: var(--dg-bg-almost-black);
+      border: 0.0625rem solid var(--dg-border-default);
+      font-size: 0.75rem;
+      font-weight: 500;
+      color: var(--dg-text-fog);
+      white-space: nowrap;
+    }
+    .dg-agent-badge[hidden] { display: none; }
+    .dg-agent-badge__dot {
+      width: 6px; height: 6px; border-radius: 50%;
+      background: var(--dg-primary); flex-shrink: 0;
+    }
+    .dg-agent-badge__voice { color: var(--dg-text-muted); }
+
+    /* ── System divider (agent switched) ──────────────────────────────────────── */
+    .system-line {
+      align-self: center;
+      color: var(--dg-text-muted);
+      font-size: 0.6875rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      padding: 0.125rem 0;
+      text-align: center;
+    }
+
     /* ── Status indicator ───────────────────────────────────────────────────── */
     .dg-conn-status {
       margin-left: 1rem;
@@ -316,6 +349,11 @@
         <line x1="8" y1="23" x2="16" y2="23"/>
       </svg>
       <h1>Voice Agent</h1>
+      <span class="dg-agent-badge" id="agentBadge" hidden title="Active agent (and the voice you're hearing)">
+        <span class="dg-agent-badge__dot"></span>
+        <span id="agentName">—</span>
+        <span class="dg-agent-badge__voice" id="agentVoice"></span>
+      </span>
       <label class="dg-toggle" id="interimWrap" title="Show live interim transcripts as you speak (applies on next start)">
         <input type="checkbox" id="interimToggle" />
         <span class="dg-toggle__track"><span class="dg-toggle__thumb"></span></span>
@@ -385,6 +423,37 @@ registerProcessor('pcm-processor', PCMProcessor);
       t.scrollTop = t.scrollHeight;
     }
 
+    // ── Active agent (surfaced from the proxy's AgentActive events) ───────────
+    let currentAgent = null;
+
+    function fmtVoice(v) {
+      return (v || '').replace(/^aura-2-/, '').replace(/-en$/, '');
+    }
+
+    function setAgent(name, voice) {
+      currentAgent = name;
+      const badge = document.getElementById('agentBadge');
+      badge.hidden = false;
+      document.getElementById('agentName').textContent = name;
+      document.getElementById('agentVoice').textContent = voice ? '· ' + fmtVoice(voice) : '';
+    }
+
+    function clearAgent() {
+      currentAgent = null;
+      document.getElementById('agentBadge').hidden = true;
+    }
+
+    function addSystemLine(text) {
+      const hint = document.getElementById('hint');
+      if (hint) hint.remove();
+      const t = document.getElementById('transcript');
+      const div = document.createElement('div');
+      div.className = 'system-line';
+      div.textContent = text;
+      t.appendChild(div);
+      scrollTranscript();
+    }
+
     function addMessage(role, content) {
       const hint = document.getElementById('hint');
       if (hint) hint.remove();
@@ -392,8 +461,9 @@ registerProcessor('pcm-processor', PCMProcessor);
       const t = document.getElementById('transcript');
       const div = document.createElement('div');
       div.className = `message ${role}`;
+      const label = role === 'user' ? 'You' : (currentAgent || 'Agent');
       div.innerHTML = `
-        <div class="message-label">${role === 'user' ? 'You' : 'Agent'}</div>
+        <div class="message-label">${esc(label)}</div>
         <div class="bubble">${esc(content)}</div>
       `;
       t.appendChild(div);
@@ -502,6 +572,14 @@ registerProcessor('pcm-processor', PCMProcessor);
         case 'ProxyConfig':
           fluxInterim = !!ev.fluxInterim;
           break;
+        case 'AgentActive':
+          // Entry agent (first event) just sets the badge; later events are
+          // transfers — show a divider noting who took over and why.
+          if (currentAgent && currentAgent !== ev.agent) {
+            addSystemLine(`→ ${ev.agent}${ev.reason ? ' · ' + ev.reason : ''}`);
+          }
+          setAgent(ev.agent, ev.voice);
+          break;
         case 'FluxTurnInfo':
           handleFlux(ev);
           break;
@@ -592,6 +670,7 @@ registerProcessor('pcm-processor', PCMProcessor);
       stopPlayback();
       interimEl = null;
       fluxInterim = false;
+      clearAgent();
       setToggleEnabled(true);
 
       setStatus('', 'Disconnected');

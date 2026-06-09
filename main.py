@@ -90,6 +90,8 @@ async def agent_proxy(websocket: WebSocket):
                 listen_model=LISTEN_MODEL,
             )
             await dg_send(orch.initial_settings(AUDIO))
+            # Tell the UI which agent/voice is active to start (transfers update it).
+            await notify_browser({"type": "AgentActive", "agent": orch.current, "voice": orch.voice_now})
 
             # Best-effort: open Flux for interim transcripts when the client asked
             # for them. If it fails (e.g. the key lacks access), the agent still
