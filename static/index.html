@@ -353,6 +353,7 @@
         <span class="dg-agent-badge__dot"></span>
         <span id="agentName">—</span>
         <span class="dg-agent-badge__voice" id="agentVoice"></span>
+        <span class="dg-agent-badge__voice" id="agentModel"></span>
       </span>
       <label class="dg-toggle" id="interimWrap" title="Show live interim transcripts as you speak (applies on next start)">
         <input type="checkbox" id="interimToggle" />
@@ -430,12 +431,17 @@ registerProcessor('pcm-processor', PCMProcessor);
       return (v || '').replace(/^aura-2-/, '').replace(/-en$/, '');
     }
 
-    function setAgent(name, voice) {
+    function fmtModel(m) {
+      return (m || '').replace(/-\d{8}$/, ''); // drop date suffix, e.g. claude-sonnet-4-20250514
+    }
+
+    function setAgent(name, voice, model) {
       currentAgent = name;
       const badge = document.getElementById('agentBadge');
       badge.hidden = false;
       document.getElementById('agentName').textContent = name;
       document.getElementById('agentVoice').textContent = voice ? '· ' + fmtVoice(voice) : '';
+      document.getElementById('agentModel').textContent = model ? '· ' + fmtModel(model) : '';
     }
 
     function clearAgent() {
@@ -578,7 +584,7 @@ registerProcessor('pcm-processor', PCMProcessor);
           if (currentAgent && currentAgent !== ev.agent) {
             addSystemLine(`→ ${ev.agent}${ev.reason ? ' · ' + ev.reason : ''}`);
           }
-          setAgent(ev.agent, ev.voice);
+          setAgent(ev.agent, ev.voice, ev.model);
           break;
         case 'FluxTurnInfo':
           handleFlux(ev);
@@ -671,6 +677,7 @@ registerProcessor('pcm-processor', PCMProcessor);
       interimEl = null;
       fluxInterim = false;
       clearAgent();
+      document.getElementById('agentModel').textContent = '';
       setToggleEnabled(true);
 
       setStatus('', 'Disconnected');

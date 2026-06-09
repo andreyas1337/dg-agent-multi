@@ -72,7 +72,7 @@ async def main(smoke: bool) -> None:
 
         async def notify(o):
             transfers.append(o)
-            print(f"  >> AgentActive -> {o.get('agent')} [{o.get('voice')}] ({o.get('reason')})")
+            print(f"  >> AgentActive -> {o.get('agent')} [voice={o.get('voice')} model={o.get('model')}] ({o.get('reason')})")
 
         orch = Orchestrator(
             AGENTS, entry=ENTRY, send=send, notify=notify,
@@ -151,15 +151,21 @@ async def main(smoke: bool) -> None:
 
         await wait_quiet()  # entry greeting
 
+        tech_idx = None
         if not smoke:
             await say("Hi, my name is Sam Rivera. I'm calling about my account balance.")
-            await wait_for_agent("billing")
+            await wait_for_agent("billing")  # openai, seamless
 
             await say("Great. What's my current balance, and do you remember the name I gave?")
             await asyncio.sleep(1.0)
 
             await say("Thanks. Actually I also have a technical problem — my laptop won't turn on.")
-            await wait_for_agent("tech")
+            await wait_for_agent("tech")  # anthropic, distinct voice
+            tech_idx = len(assistant_lines)
+
+            # The decisive cross-provider test: tech (Anthropic) must recall a name
+            # that was only ever said to the OpenAI-driven agents before the swap.
+            await say("Before we troubleshoot — what name did I give earlier? Please say it back.")
             await asyncio.sleep(1.0)
 
         ktask.cancel()
@@ -179,6 +185,9 @@ async def main(smoke: bool) -> None:
     print(f"  voice switches       : {voice_switches}  (expect 1 — only entering tech)")
     if not smoke:
         print(f"  history survived?    : name={'rivera' in assistant or 'sam' in assistant}  balance={'1,234' in assistant}")
+        if tech_idx is not None:
+            tech_said = " ".join(assistant_lines[tech_idx:]).lower()
+            print(f"  X-PROVIDER history?  : tech (anthropic) recalled name = {'rivera' in tech_said or 'sam' in tech_said}")
     print("=" * 60)
 
 

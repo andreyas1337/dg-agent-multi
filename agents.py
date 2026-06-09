@@ -86,6 +86,10 @@ BILLING = Agent(
 TECH = Agent(
     name="tech",
     voice="aura-2-orion-en",  # its own voice -> perceived as a distinct specialist
+    # ...and its OWN model, on a different provider, to show per-agent think:
+    # a fast/cheap router (gpt-4o-mini) hands off to a stronger specialist model.
+    provider="anthropic",
+    model="claude-sonnet-4-20250514",
     prompt=(
         "You are a technical support specialist at Acme Support. In one short "
         "sentence, introduce yourself by your role, then help the customer "

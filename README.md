@@ -100,6 +100,28 @@ When an agent calls `transfer_to_agent`, the session is **reconfigured in place*
 automatically, so there's no reconnect and no summarization step. (Verified in
 `selftest.py`: a name given to triage is recalled by billing after the swap.)
 
+### Each agent can run its own model — even across providers
+
+An `Agent` is effectively an `UpdateThink` payload (provider + model + prompt +
+functions) plus an `UpdateSpeak` payload (voice). So each agent can declare its
+own `model`/`provider`: a cheap, fast router can hand off to a stronger specialist
+model mid-call. In this sample `triage`/`billing` run `gpt-4o-mini` while `tech`
+runs Anthropic `claude-sonnet-4`:
+
+```python
+tech = Agent(
+    name="tech", voice="aura-2-orion-en",
+    provider="anthropic", model="claude-sonnet-4-20250514",   # its own brain
+    prompt="You are a technical support specialist...",
+    tools=[Tool("run_diagnostic", ...)],
+    transfers_to={"billing": "...", "triage": "..."},
+)
+```
+
+Conversation history survives the swap **even across providers** — verified in
+`selftest.py`: `tech` (Anthropic) recalls a name that was only ever said to the
+OpenAI-driven agents before the handoff.
+
 ### How a handoff *feels* is emergent — no mode flag
 
 There is no "visible vs seamless" switch. Distinctness comes from config the app

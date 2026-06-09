@@ -83,24 +83,33 @@ class Tool:
 
 @dataclass
 class Agent:
-    """One persona/configuration.
+    """One persona/configuration — effectively an UpdateThink payload (provider +
+    model + prompt + functions) plus an UpdateSpeak payload (voice). On transfer
+    the orchestrator sends exactly those, so each agent can run its OWN model.
 
-    voice        — TTS model for this agent. Omit (None) to INHERIT the current
-                   voice: the handoff is then audibly seamless (same person).
-                   Set it to make this agent sound like a distinct specialist.
+    model        — LLM for this agent (e.g. "gpt-4o-mini", "gpt-4o",
+                   "claude-sonnet-4-20250514"). Omit to use the orchestrator default.
+    provider     — LLM provider type (e.g. "open_ai", "anthropic"). Omit to use the
+                   orchestrator default's provider. Lets a cheap/fast router hand
+                   off to a stronger specialist model — even across providers.
+    think_options— escape hatch merged into the think provider (temperature,
+                   endpoint, BYO-LLM credentials, ...).
+    voice        — TTS model. Omit (None) to INHERIT the current voice (seamless,
+                   same person); set it to sound like a distinct specialist.
     greeting     — opening line, spoken only when this is the ENTRY agent. Takeover
-                   behavior on transfer is governed by the agent's own `prompt`
-                   (introduce vs continue), not by a separate field.
+                   behavior on transfer is governed by the agent's own `prompt`.
     transfers_to — {target name: when to use}; the transfer tool + routing are
-                   derived from this. think — optional per-agent LLM override.
+                   derived from this.
     """
     name: str
     prompt: str
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    think_options: Optional[dict] = None
     voice: Optional[str] = None
     greeting: str = ""
     tools: list[Tool] = field(default_factory=list)
     transfers_to: dict[str, str] = field(default_factory=dict)
-    think: Optional[dict] = None
 
 
 class Orchestrator:
@@ -140,6 +149,11 @@ class Orchestrator:
         """The TTS voice currently playing (for UI display)."""
         return self._voice_now
 
+    @property
+    def model_now(self) -> Optional[str]:
+        """The LLM currently driving the conversation (for UI display)."""
+        return self._provider_for(self._agents[self.current]).get("model")
+
     def _validate_edges(self) -> None:
         for a in self._agents.values():
             for target in a.transfers_to:
@@ -172,9 +186,21 @@ class Orchestrator:
             )
         return specs
 
+    def _provider_for(self, agent: Agent) -> dict:
+        """The think provider for an agent: orchestrator default, with per-agent
+        provider/model/options layered on top."""
+        p = dict(self.think_provider)
+        if agent.provider:
+            p["type"] = agent.provider
+        if agent.model:
+            p["model"] = agent.model
+        if agent.think_options:
+            p.update(agent.think_options)
+        return p
+
     def _think_for(self, agent: Agent) -> dict:
         return {
-            "provider": agent.think or self.think_provider,
+            "provider": self._provider_for(agent),
             "prompt": agent.prompt,
             "functions": self._functions_for(agent),
         }
@@ -269,7 +295,7 @@ class Orchestrator:
             # Voice the caller will hear after this hop (target's own, or inherited).
             await self.notify(
                 {"type": "AgentActive", "agent": target, "voice": agent.voice or self._voice_now,
-                 "reason": args.get("reason", "")}
+                 "model": self._provider_for(agent).get("model"), "reason": args.get("reason", "")}
             )
 
     async def _finalize_transfer(self) -> None:
