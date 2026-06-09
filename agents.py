@@ -33,16 +33,27 @@ def run_diagnostic(args: dict) -> dict:
 
 # --- Personas --------------------------------------------------------------
 
+# This graph deliberately MIXES two handoff feels, with no mode flag:
+#
+#   triage + billing  -> share one voice (billing omits `voice`, inheriting it)
+#                        and use "continue as the same assistant" prompts, so the
+#                        caller perceives ONE assistant that gains billing tools.
+#   tech              -> declares its own voice and introduces itself, so it's
+#                        perceived as a distinct specialist.
+#
+# Distinctness emerges from `voice` (set vs omitted) + prompt wording — that's it.
+
 TRIAGE = Agent(
     name="triage",
-    voice="aura-2-asteria-en",
+    voice="aura-2-asteria-en",  # the shared "house" voice
     prompt=(
-        "You are the front desk for Acme Support. Greet the customer, figure out "
-        "whether they need billing or technical help, and transfer them to the "
-        "right specialist. Keep replies to one or two sentences. Do not try to "
-        "resolve billing or technical issues yourself — transfer instead."
+        "You are the assistant for Acme Support. Help with general questions and "
+        "route the customer to the right capability. For billing matters (charges, "
+        "balances, refunds) transfer to billing. For technical problems (devices, "
+        "connectivity, errors) transfer to technical support. Keep replies to one "
+        "or two sentences."
     ),
-    greeting="Hi, thanks for calling Acme Support! Are you calling about billing or a technical issue?",
+    greeting="Hi, thanks for calling Acme Support! How can I help you today?",
     transfers_to={
         "billing": "billing questions, charges, balances, refunds, invoices",
         "tech": "technical problems, login/connectivity issues, errors, outages",
@@ -51,15 +62,13 @@ TRIAGE = Agent(
 
 BILLING = Agent(
     name="billing",
-    voice="aura-2-thalia-en",
+    # voice omitted -> inherits triage's voice: seamless, same perceived person.
     prompt=(
-        "You are a billing specialist at Acme Support. Help the customer with "
-        "charges, balances, and refunds. Use get_account_balance when they ask "
-        "about their balance. If they bring up a technical problem instead, "
-        "transfer them back to the front desk. Answer the customer's questions "
-        "directly, including about details they mentioned earlier. Keep replies concise."
+        "You are continuing as the same Acme Support assistant, now handling "
+        "billing. Do NOT reintroduce yourself or restart a greeting — just keep "
+        "helping. Use get_account_balance for balance questions. Answer directly, "
+        "including about details the customer mentioned earlier. Keep replies concise."
     ),
-    greeting="Hi, I'm the billing specialist. I've been briefed on your request — how can I help with your account?",
     tools=[
         Tool(
             "get_account_balance",
@@ -68,19 +77,21 @@ BILLING = Agent(
             get_account_balance,
         )
     ],
-    transfers_to={"triage": "anything that is not billing-related"},
+    transfers_to={
+        "tech": "technical problems, login/connectivity issues, errors, outages",
+        "triage": "general questions, or anything not billing or technical",
+    },
 )
 
 TECH = Agent(
     name="tech",
-    voice="aura-2-orion-en",
+    voice="aura-2-orion-en",  # its own voice -> perceived as a distinct specialist
     prompt=(
-        "You are a technical support specialist at Acme Support. Help the customer "
-        "troubleshoot. Use run_diagnostic when a health check would help. If they "
-        "bring up a billing question instead, transfer them back to the front desk. "
-        "Keep replies concise."
+        "You are a technical support specialist at Acme Support. In one short "
+        "sentence, introduce yourself by your role, then help the customer "
+        "troubleshoot. Use run_diagnostic when a health check would help. Keep "
+        "replies concise."
     ),
-    greeting="Hi, I'm technical support. I've got the context from your conversation — what issue are you seeing?",
     tools=[
         Tool(
             "run_diagnostic",
@@ -89,7 +100,10 @@ TECH = Agent(
             run_diagnostic,
         )
     ],
-    transfers_to={"triage": "anything that is not a technical issue"},
+    transfers_to={
+        "billing": "billing questions, charges, balances, refunds, invoices",
+        "triage": "general questions, or anything not billing or technical",
+    },
 )
 
 AGENTS = [TRIAGE, BILLING, TECH]

@@ -71,32 +71,23 @@ uvicorn main:app --reload --port 8000
 
 ## Multi-agent transfers
 
-Three personas share one WebSocket session:
-
-| Agent | Voice | Role |
-|-------|-------|------|
-| `triage` (entry) | `aura-2-asteria-en` | Front desk; routes the caller |
-| `billing` | `aura-2-thalia-en` | Balances, charges, refunds (`get_account_balance`) |
-| `tech` | `aura-2-orion-en` | Troubleshooting (`run_diagnostic`) |
-
-Personas are declared with a typed API (`agents.py`); the orchestrator derives
-the `transfer_to_agent` tool and routing from each agent's `transfers_to` edges:
+Personas (`agents.py`) share one WebSocket session. The orchestrator derives the
+`transfer_to_agent` tool and routing from each agent's `transfers_to` edges:
 
 ```python
 from orchestrator import Agent, Tool, Orchestrator
 
 triage = Agent(
-    name="triage", voice="aura-2-asteria-en", prompt="You are the front desk...",
+    name="triage", voice="aura-2-asteria-en", prompt="You are the assistant...",
     greeting="Hi, thanks for calling Acme Support!",
     transfers_to={"billing": "charges, balances, refunds",
                   "tech": "login/connectivity issues, errors"},
 )
-billing = Agent(
-    name="billing", voice="aura-2-thalia-en", prompt="You are a billing specialist...",
-    greeting="Hi, I'm the billing specialist...",
+billing = Agent(                 # voice omitted -> inherits triage's voice
+    name="billing", prompt="You are continuing as the same assistant, now billing...",
     tools=[Tool("get_account_balance", "Look up the balance.",
                 {"type": "object", "properties": {}}, get_account_balance)],
-    transfers_to={"triage": "anything not billing-related"},
+    transfers_to={"tech": "technical issues", "triage": "anything else"},
 )
 
 orch = Orchestrator([triage, billing, tech], entry="triage",
@@ -104,22 +95,33 @@ orch = Orchestrator([triage, billing, tech], entry="triage",
 await send(orch.initial_settings(audio))   # then feed every DG event to orch.handle()
 ```
 
-When an agent calls `transfer_to_agent`, the session is **reconfigured in
-place** — the WebSocket is never torn down and the conversation history carries
-across automatically, so there's no reconnect and no summarization step.
-(Verified end-to-end in `selftest.py`: a name given to the front desk is
-recalled by billing after the swap.)
+When an agent calls `transfer_to_agent`, the session is **reconfigured in place**
+— the WebSocket is never torn down and the conversation history carries across
+automatically, so there's no reconnect and no summarization step. (Verified in
+`selftest.py`: a name given to triage is recalled by billing after the swap.)
 
-The handoff sequence (in `orchestrator.py`):
+### How a handoff *feels* is emergent — no mode flag
 
-```
-FunctionCallRequest(transfer_to_agent)
-  → FunctionCallResponse(transferring)
-  → UpdateThink(new prompt + tools)   → await ThinkUpdated
-  → UpdateSpeak(new voice)            → await SpeakUpdated
-  → wait for AgentAudioDone (≤1.5s)   ← lets the outgoing line finish
-  → InjectAgentMessage(greeting)      → retry if agent is still speaking
-```
+There is no "visible vs seamless" switch. Distinctness comes from config the app
+already writes:
+
+- **Voice** — set an agent's `voice` and switching to it changes the voice (a
+  distinct specialist); **omit** it and the agent **inherits the current voice**,
+  so the caller keeps hearing one person.
+- **Prompt** — the incoming agent's prompt decides whether it introduces itself
+  ("I'm technical support…") or just continues ("…keep helping as the same
+  assistant").
+
+So you can **mix within one graph**: in this sample, `triage`+`billing` share a
+voice and use "continue" prompts (one perceived assistant that gains billing
+tools), while `tech` has its own voice and introduces itself (a distinct
+specialist).
+
+The smoothness trick (in `orchestrator.py`): the orchestrator swaps `UpdateThink`
+(and `UpdateSpeak`, only when the target declares a voice) **before** answering
+the transfer tool call, so the *new* agent's follow-up is the first thing spoken
+— no repeated "one moment" line — and the outgoing agent is told to transfer
+silently.
 
 ### Files
 
@@ -132,9 +134,9 @@ FunctionCallRequest(transfer_to_agent)
 - **`selftest.py`** — mic-free end-to-end test (TTS-synthesized user speech).
   Run: `../.venv/bin/python selftest.py` (or `selftest.py smoke`).
 
-Try it: start with a billing question ("what's my balance?") and the front desk
-hands you to billing in a different voice; then mention a login problem and
-billing hands you to tech.
+Try it: ask "what's my balance?" — the assistant silently gains billing tools and
+answers in the *same* voice (seamless); then say "my laptop won't turn on" and you
+hand off to `tech`, who introduces itself in a *different* voice (distinct specialist).
 
 ## Live (interim) transcripts via Flux
 

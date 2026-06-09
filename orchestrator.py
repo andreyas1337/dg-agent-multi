@@ -6,41 +6,44 @@ Public API (what an app developer writes):
     from orchestrator import Agent, Tool, Orchestrator
 
     billing = Agent(
-        name="billing",
-        voice="aura-2-thalia-en",
-        prompt="You are a billing specialist...",
-        greeting="Hi, I'm the billing specialist...",
+        name="billing",                 # voice omitted -> inherits the current voice
+        prompt="You are the same assistant, now handling billing...",
         tools=[Tool("get_account_balance", "Look up the balance.", {...}, get_balance)],
-        transfers_to={"triage": "anything not billing-related"},
+        transfers_to={"tech": "technical issues", "triage": "anything else"},
     )
     orch = Orchestrator([triage, billing, tech], entry="triage",
                         send=send, think_provider={"type": "open_ai", "model": "gpt-4o-mini"})
     await send(orch.initial_settings(audio))   # then feed every DG event to orch.handle()
 
-The orchestrator owns the fiddly, timing-sensitive handoff that every multi-agent
-voice app otherwise re-implements (and gets subtly wrong). It all happens on ONE
-long-lived WebSocket — no teardown, no reconnect — and (verified against the live
-API) conversation history carries across the swap, so there's no summarization:
+Everything happens on ONE long-lived WebSocket — no teardown, no reconnect — and
+(verified against the live API) conversation history carries across the swap, so
+there is no summarization step.
 
-    transfer_to_agent(target)
-      -> FunctionCallResponse(transferring)
-      -> UpdateThink(target prompt + tools)  -> await ThinkUpdated
-      -> UpdateSpeak(target voice)           -> await SpeakUpdated
-      -> wait for the outgoing line to finish (AgentAudioDone, bounded by timeout)
-      -> InjectAgentMessage(greeting)        -> retry on WARNING (still speaking)
+There is NO "visible vs seamless" mode. How a handoff is perceived emerges from
+configuration the app already provides:
 
-Gating the greeting on AgentAudioDone (with a fallback timeout) is a deliberate
-improvement over a blind fixed delay; this is exactly the kind of constant an SDK
-should own and tune centrally.
+  * VOICE — if a target agent sets its own `voice`, switching to it changes the
+    voice (the caller hears a distinct specialist). If `voice` is omitted, the
+    agent INHERITS the current voice, so the caller keeps hearing one person.
+    A "super-agent" is just several configs that share a voice; a separate
+    specialist is a config with its own voice. Both can coexist in one graph.
+  * PROMPT — whether the incoming agent introduces itself ("I'm the billing
+    specialist...") or just continues ("...keep helping as the same assistant")
+    is up to that agent's prompt. The app writes prompts anyway; no extra knob.
 
-The class is transport-agnostic: it needs only a `send` callable to reach the
-Deepgram socket and an optional `notify` callable for the UI. It knows nothing
-about whether audio comes from a browser, Twilio, or SIP.
+The orchestrator owns only the non-negotiable mechanics every app otherwise gets
+wrong: it swaps the Think config (and the voice, when the target declares one)
+BEFORE answering the transfer tool call, so the new agent's natural follow-up to
+the tool result is its first utterance — no double-talk, no repeated lines — and
+the outgoing agent is told to transfer SILENTLY. Plus routing, edge validation,
+and a re-entrancy guard.
+
+Transport-agnostic: needs only a `send` callable to reach the Deepgram socket and
+an optional `notify` callable for the UI.
 """
 
 from __future__ import annotations
 
-import asyncio
 import inspect
 import json
 import logging
@@ -53,31 +56,22 @@ Send = Callable[[dict], Awaitable[None]]
 Notify = Callable[[dict], Awaitable[None]]
 ToolResult = Union[dict, Awaitable[dict]]
 
-_INJECT_DURING_SPEECH = "INJECT_AGENT_MESSAGE_DURING_AGENT_SPEECH"
 _TRANSFER_TOOL = "transfer_to_agent"
 
-# The SDK owns the handoff choreography prompt. The outgoing agent says ONE short
-# line and then goes silent, so the incoming agent delivers the real greeting —
-# this is what keeps the handoff from double-greeting or talking over itself.
-TRANSFER_PROTOCOL = """
+# Appended to the transfer TOOL description (not the agent's own prompt). Tells the
+# model to hand off silently — the receiving agent does all the talking, so the
+# transfer line is never spoken (and so never duplicated).
+_TRANSFER_INSTRUCTION = (
+    "\n\nWhen the customer's need matches one of these targets, call this function "
+    "immediately and provide no spoken response. Do NOT tell the customer you are "
+    "transferring them or to hold on — the receiving agent continues the conversation."
+)
 
-TRANSFER PROTOCOL (follow exactly):
-1. Immediately BEFORE calling transfer_to_agent, say one short sentence such as
-   "One moment while I connect you to the right specialist." That must be your
-   last spoken utterance.
-2. Then call transfer_to_agent. After the call, produce NO more text. Your turn
-   is over; the next agent greets the customer.
-"""
-
-
-# --------------------------------------------------------------------------
-# Public types
-# --------------------------------------------------------------------------
 
 @dataclass
 class Tool:
-    """A business tool. The orchestrator routes calls to `handler` and returns
-    its result to the agent. `handler` may be sync or async."""
+    """A business tool. The orchestrator routes calls to `handler` (sync or async)
+    and returns its result to the agent."""
     name: str
     description: str
     parameters: dict
@@ -89,30 +83,25 @@ class Tool:
 
 @dataclass
 class Agent:
-    """One persona. `transfers_to` maps target agent name -> when to use it; the
-    orchestrator derives the transfer tool + routing from it (no hand-wiring).
-    `greeting` is spoken on connect for the entry agent, and injected when this
-    agent is transferred in. `think` optionally overrides the LLM provider."""
+    """One persona/configuration.
+
+    voice        — TTS model for this agent. Omit (None) to INHERIT the current
+                   voice: the handoff is then audibly seamless (same person).
+                   Set it to make this agent sound like a distinct specialist.
+    greeting     — opening line, spoken only when this is the ENTRY agent. Takeover
+                   behavior on transfer is governed by the agent's own `prompt`
+                   (introduce vs continue), not by a separate field.
+    transfers_to — {target name: when to use}; the transfer tool + routing are
+                   derived from this. think — optional per-agent LLM override.
+    """
     name: str
-    voice: str
     prompt: str
+    voice: Optional[str] = None
     greeting: str = ""
     tools: list[Tool] = field(default_factory=list)
     transfers_to: dict[str, str] = field(default_factory=dict)
     think: Optional[dict] = None
 
-
-@dataclass
-class Tuning:
-    """Advanced handoff timing — defaults are fine for most apps."""
-    audio_done_timeout: float = 1.5
-    max_inject_retries: int = 3
-    inject_retry_delay: float = 0.8
-
-
-# --------------------------------------------------------------------------
-# Orchestrator
-# --------------------------------------------------------------------------
 
 class Orchestrator:
     def __init__(
@@ -124,7 +113,7 @@ class Orchestrator:
         think_provider: dict,
         notify: Optional[Notify] = None,
         listen_model: str = "nova-3",
-        tuning: Tuning = Tuning(),
+        default_voice: str = "aura-2-asteria-en",
     ):
         self._agents: dict[str, Agent] = {a.name: a for a in agents}
         if entry not in self._agents:
@@ -136,15 +125,15 @@ class Orchestrator:
         self.notify = notify
         self.think_provider = think_provider
         self.listen_model = listen_model
-        self.tuning = tuning
+        self.default_voice = default_voice
 
         self.current = entry
-        # Handoff state machine: None (idle) | "think" | "speak" | "audio"
+        # Whatever voice is currently playing; agents without their own voice keep it.
+        self._voice_now = self._agents[entry].voice or default_voice
+        # Transfer state machine: None (idle) | "think" | "speak"
         self._step: Optional[str] = None
         self._target: Optional[str] = None
-        self._audio_done = asyncio.Event()
-        self._inject_greeting = ""
-        self._inject_retries = 0
+        self._pending_call_id: Optional[str] = None
 
     def _validate_edges(self) -> None:
         for a in self._agents.values():
@@ -152,7 +141,7 @@ class Orchestrator:
                 if target not in self._agents:
                     raise ValueError(f"agent {a.name!r} transfers to unknown agent {target!r}")
 
-    # -- settings ---------------------------------------------------------
+    # -- settings / think config -----------------------------------------
 
     def _functions_for(self, agent: Agent) -> list[dict]:
         """Business tools + an auto-derived transfer tool (if the agent has edges)."""
@@ -163,9 +152,8 @@ class Orchestrator:
                 {
                     "name": _TRANSFER_TOOL,
                     "description": (
-                        "Transfer the conversation to another agent when the "
-                        "customer's need matches one of these targets:\n"
-                        + options + TRANSFER_PROTOCOL
+                        "Transfer the conversation to another agent when the customer's "
+                        "need matches one of these targets:\n" + options + _TRANSFER_INSTRUCTION
                     ),
                     "parameters": {
                         "type": "object",
@@ -195,7 +183,7 @@ class Orchestrator:
             "agent": {
                 "listen": {"provider": {"type": "deepgram", "model": self.listen_model}},
                 "think": self._think_for(agent),
-                "speak": {"provider": {"type": "deepgram", "model": agent.voice}},
+                "speak": {"provider": {"type": "deepgram", "model": self._voice_now}},
                 "greeting": agent.greeting,
             },
         }
@@ -211,25 +199,16 @@ class Orchestrator:
                 await self._on_function(fn)
 
         elif t == "ThinkUpdated" and self._step == "think":
-            self._step = "speak"
-            await self.send(
-                {"type": "UpdateSpeak", "speak": {"provider": {"type": "deepgram", "model": self._agents[self._target].voice}}}
-            )
+            target_voice = self._agents[self._target].voice
+            if target_voice and target_voice != self._voice_now:
+                self._step = "speak"
+                self._voice_now = target_voice
+                await self.send({"type": "UpdateSpeak", "speak": {"provider": {"type": "deepgram", "model": target_voice}}})
+            else:
+                await self._finalize_transfer()  # voice inherited -> seamless
 
         elif t == "SpeakUpdated" and self._step == "speak":
-            # Voice is swapped. Wait for the outgoing line to finish before the
-            # new greeting so they don't overlap.
-            self._step = "audio"
-            self._audio_done.clear()
-            asyncio.create_task(self._inject_after_audio())
-
-        elif t == "AgentAudioDone":
-            self._audio_done.set()
-
-        elif t == "Warning" and ev.get("code") == _INJECT_DURING_SPEECH:
-            if self._inject_greeting and self._inject_retries < self.tuning.max_inject_retries:
-                self._inject_retries += 1
-                asyncio.create_task(self._retry_inject())
+            await self._finalize_transfer()
 
     # -- function calls ---------------------------------------------------
 
@@ -270,36 +249,25 @@ class Orchestrator:
             return
 
         logger.info("transfer %s -> %s (%s)", self.current, target, args.get("reason"))
-        await self._respond(call_id, _TRANSFER_TOOL, {"status": "transferring"})
-
         agent = self._agents[target]
         self._target = target
         self._step = "think"
-        self._inject_greeting = agent.greeting
-        self._inject_retries = 0
-        await self.send({"type": "UpdateThink", "think": self._think_for(agent)})
+        self._pending_call_id = call_id
         self.current = target
+
+        # Swap the brain (and later the voice, if the target declares one) FIRST. We
+        # answer the tool call only after the swap, so the NEW agent generates the
+        # next utterance — no double talk. Whether it introduces itself is up to its
+        # own prompt.
+        await self.send({"type": "UpdateThink", "think": self._think_for(agent)})
         if self.notify:
             await self.notify({"type": "AgentSwitched", "agent": target, "reason": args.get("reason", "")})
 
+    async def _finalize_transfer(self) -> None:
+        await self._respond(self._pending_call_id, _TRANSFER_TOOL, {"status": "transferring"})
+        self._step = None
+        self._target = None
+        self._pending_call_id = None
+
     async def _respond(self, call_id: str, name: str, content: dict) -> None:
         await self.send({"type": "FunctionCallResponse", "id": call_id, "name": name, "content": json.dumps(content)})
-
-    # -- greeting injection ----------------------------------------------
-
-    async def _inject_after_audio(self) -> None:
-        try:
-            await asyncio.wait_for(self._audio_done.wait(), timeout=self.tuning.audio_done_timeout)
-        except asyncio.TimeoutError:
-            logger.debug("AgentAudioDone not seen in %.1fs; injecting anyway", self.tuning.audio_done_timeout)
-        await self._send_inject()
-
-    async def _send_inject(self) -> None:
-        self._step = None  # handoff complete; re-entrancy guard lifts here
-        if self._inject_greeting:
-            await self.send({"type": "InjectAgentMessage", "message": self._inject_greeting})
-
-    async def _retry_inject(self) -> None:
-        await asyncio.sleep(self.tuning.inject_retry_delay)
-        logger.debug("retrying greeting inject (attempt %d)", self._inject_retries)
-        await self.send({"type": "InjectAgentMessage", "message": self._inject_greeting})

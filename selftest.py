@@ -4,13 +4,17 @@ End-to-end self-test for the multi-agent orchestrator — no microphone needed.
 Drives the live Deepgram Voice Agent through the REAL orchestrator code path by
 synthesizing "user" speech with Deepgram TTS and streaming it in as mic audio.
 
-Scenario (designed to prove three things at once):
-  1. Tell the FRONT DESK a name + ask about the balance  -> expect transfer to billing
-  2. Ask BILLING to recall the name + the balance         -> proves (a) transfer fired,
-     (b) handshake completed, (c) conversation history SURVIVED UpdateThink.
+Scenario:
+  1. Front desk, give a name + ask about billing      -> transfer to billing
+  2. Ask billing for the balance + to recall the name -> history survived UpdateThink
+  3. Mention a technical problem                       -> billing -> tech (direct edge)
 
-Usage:  ../.venv/bin/python selftest.py [smoke]
-  smoke -> just connect, send Settings, print the greeting, exit.
+triage+billing share a voice (seamless, one assistant); tech has its own voice
+(distinct specialist). Checks: transfers fired, NO duplicated/echoed agent lines,
+history retained, and exactly one voice switch (only when entering tech).
+
+Usage:
+  ../.venv/bin/python selftest.py [smoke]
 """
 
 from __future__ import annotations
@@ -56,6 +60,7 @@ def tts(text: str) -> bytes:
 async def main(smoke: bool) -> None:
     events: list[dict] = []
     transfers: list[dict] = []
+    assistant_lines: list[str] = []
 
     async with websockets.connect(AGENT_URL, additional_headers={"Authorization": f"Token {KEY}"}) as ws:
         lock = asyncio.Lock()
@@ -86,11 +91,10 @@ async def main(smoke: bool) -> None:
                 t = ev.get("type")
                 if t == "ConversationText":
                     print(f"  [{ev['role']:9}] {ev['content']}")
+                    if ev["role"] == "assistant":
+                        assistant_lines.append(ev["content"].strip())
                 elif t == "FunctionCallRequest":
-                    names = [f.get("name") for f in ev.get("functions", [])]
-                    print(f"  <FunctionCallRequest> {names}")
-                elif t in ("ThinkUpdated", "SpeakUpdated", "SettingsApplied", "Welcome"):
-                    print(f"  <{t}>")
+                    print(f"  <FunctionCallRequest> {[f.get('name') for f in ev.get('functions', [])]}")
                 elif t in ("Error", "Warning"):
                     print(f"  <{t}> code={ev.get('code')} desc={ev.get('description')}")
                 if t == "AgentAudioDone":
@@ -116,7 +120,7 @@ async def main(smoke: bool) -> None:
 
         ktask = asyncio.create_task(keepalive())
 
-        async def wait_quiet(timeout=25.0):
+        async def wait_quiet(timeout=20.0):
             try:
                 await asyncio.wait_for(done.wait(), timeout=timeout)
             except asyncio.TimeoutError:
@@ -137,27 +141,25 @@ async def main(smoke: bool) -> None:
             await wait_quiet()
 
         async def wait_for_agent(name: str, timeout=20.0):
-            """Block until the orchestrator has actually switched to `name`."""
             waited = 0.0
             while orch.current != name and waited < timeout:
                 await asyncio.sleep(0.25)
                 waited += 0.25
+            done.clear()
+            await wait_quiet(timeout=12.0)  # let the new agent's first utterance finish
             print(f"  ... active agent is now: {orch.current}")
 
-        # Wait for the entry agent's greeting to finish.
-        await wait_quiet()
+        await wait_quiet()  # entry greeting
 
         if not smoke:
-            # Turn 1: give a memorable token + request billing, then wait until the
-            # transfer truly completes AND billing's greeting finishes.
-            await say("My name is Sam Rivera and my lucky number is forty-two. Please transfer me to billing.")
+            await say("Hi, my name is Sam Rivera. I'm calling about my account balance.")
             await wait_for_agent("billing")
-            done.clear()
-            await wait_quiet(timeout=12.0)  # specifically wait for billing's greeting
 
-            # Turn 2: now definitively at billing — recall facts that were only ever
-            # said to the front desk. This is the history-retention test.
-            await say("What name and lucky number did I give earlier? Please repeat them back.")
+            await say("Great. What's my current balance, and do you remember the name I gave?")
+            await asyncio.sleep(1.0)
+
+            await say("Thanks. Actually I also have a technical problem — my laptop won't turn on.")
+            await wait_for_agent("tech")
             await asyncio.sleep(1.0)
 
         ktask.cancel()
@@ -167,16 +169,16 @@ async def main(smoke: bool) -> None:
     print("\n" + "=" * 60)
     print("SUMMARY")
     fn_calls = [f.get("name") for e in events if e.get("type") == "FunctionCallRequest" for f in e.get("functions", [])]
-    assistant = " ".join(e["content"] for e in events if e.get("type") == "ConversationText" and e["role"] == "assistant").lower()
+    assistant = " ".join(assistant_lines).lower()
+    dups = [a for i, a in enumerate(assistant_lines) if i and a.lower() == assistant_lines[i - 1].lower()]
+    voice_switches = sum(1 for e in events if e.get("type") == "SpeakUpdated")
     print(f"  transfers fired      : {[t.get('agent') for t in transfers]}")
     print(f"  function calls       : {fn_calls}")
-    print(f"  ThinkUpdated seen    : {any(e.get('type') == 'ThinkUpdated' for e in events)}")
-    print(f"  SpeakUpdated seen    : {any(e.get('type') == 'SpeakUpdated' for e in events)}")
     print(f"  errors               : {[e.get('code') for e in events if e.get('type') == 'Error']}")
+    print(f"  duplicate agent lines: {len(dups)}  {dups if dups else '(none ✓)'}")
+    print(f"  voice switches       : {voice_switches}  (expect 1 — only entering tech)")
     if not smoke:
-        recalled_name = "rivera" in assistant or "sam" in assistant
-        recalled_num = "42" in assistant or "forty" in assistant
-        print(f"  history survived?    : name recalled={recalled_name}  number recalled={recalled_num}")
+        print(f"  history survived?    : name={'rivera' in assistant or 'sam' in assistant}  balance={'1,234' in assistant}")
     print("=" * 60)
 
 
