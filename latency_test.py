@@ -28,7 +28,9 @@ from dotenv import load_dotenv
 
 load_dotenv()
 KEY = os.environ["DEEPGRAM_API_KEY"]
-URL = "wss://agent.deepgram.com/v1/agent/converse"
+# Region host: US default "agent.deepgram.com"; EU "api.eu.deepgram.com".
+HOST = os.environ.get("DG_AGENT_HOST", "agent.deepgram.com")
+URL = f"wss://{HOST}/v1/agent/converse"
 AUTH = {"Authorization": f"Token {KEY}"}
 AUDIO = {
     "input": {"encoding": "linear16", "sample_rate": 16000},
@@ -96,8 +98,12 @@ def stats(label, xs):
 
 
 async def main(n: int):
-    print(f"Measuring handoff latency, {n} iterations each...\n")
-    rc = await measure_reconnect(n)
+    print(f"Measuring handoff latency against {HOST}, {n} iterations each...\n")
+    try:
+        rc = await measure_reconnect(n)
+    except Exception as e:
+        print(f"  FAILED to reach {HOST}: {type(e).__name__}: {e}")
+        return
     th, sp = await measure_update(n)
     total_update = [a + b for a, b in zip(th, sp)]
 
