@@ -11,8 +11,11 @@ over a WebSocket.
 The agents are configured in `agents.py`:
 
 - **Listen:** Deepgram `nova-3` (speech-to-text)
-- **Think:** OpenAI `gpt-4o-mini`
-- **Speak:** Deepgram Aura-2, a different voice per persona
+- **Think:** per agent — `gpt-4o-mini` by default; `tech` runs Anthropic
+  `claude-sonnet-4` (the Anthropic model is served via Deepgram, so the
+  `DEEPGRAM_API_KEY` is the only credential needed)
+- **Speak:** Deepgram Aura-2 — a distinct voice for `tech`; `billing` inherits
+  `triage`'s voice (seamless)
 
 ## Prerequisites
 
@@ -99,6 +102,12 @@ When an agent calls `transfer_to_agent`, the session is **reconfigured in place*
 — the WebSocket is never torn down and the conversation history carries across
 automatically, so there's no reconnect and no summarization step. (Verified in
 `selftest.py`: a name given to triage is recalled by billing after the swap.)
+It's also faster: `latency_test.py` measures the in-place swap at ~3–5× quicker
+than opening a fresh agent session (and that's before counting the audio
+re-stream and context re-pass a reconnect would also need).
+
+The active agent — with its current voice and model — is shown as a badge in the
+UI header, and each transfer is marked in the transcript.
 
 ### Each agent can run its own model — even across providers
 
@@ -153,8 +162,12 @@ silently.
   in the Deepgram SDK.
 - **`main.py`** — the proxy: pipes audio and feeds Deepgram events to the
   orchestrator.
-- **`selftest.py`** — mic-free end-to-end test (TTS-synthesized user speech).
+- **`selftest.py`** — mic-free end-to-end test (TTS-synthesized user speech):
+  transfers fire, no duplicated lines, history retained (incl. cross-provider).
   Run: `../.venv/bin/python selftest.py` (or `selftest.py smoke`).
+- **`latency_test.py`** — handoff-latency benchmark: in-place Update vs
+  reconnect. `../.venv/bin/python latency_test.py [iterations]`
+  (`DG_AGENT_HOST=api.eu.deepgram.com` to test the EU region).
 
 Try it: ask "what's my balance?" — the assistant silently gains billing tools and
 answers in the *same* voice (seamless); then say "my laptop won't turn on" and you
@@ -171,8 +184,8 @@ toggle's *initial* position — the user's choice is then remembered in
 The Voice Agent socket only emits **final** user turns (`ConversationText`) —
 it has no interim/partial transcript event. To show text *as you speak*, the
 proxy opens a second, parallel STT connection to Deepgram **Flux**
-(`wss://api.deepgram.com/v2/listen?model=flux-general-en`) and feeds it the same
-mic audio.
+(`wss://api.deepgram.com/v2/listen?model=flux-general-multi`) and feeds it the
+same mic audio.
 
 Wiring:
 
