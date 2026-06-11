@@ -1,22 +1,26 @@
 # Multi-Agent Voice Architecture with In-Place Updates
 
-A multi-agent voice system lets a single call be handled by several specialized
-agents (a router, a billing specialist, a technical specialist) instead of one
-overloaded prompt. This page describes how to build that on Deepgram's
-[Voice Agent API](https://developers.deepgram.com/docs/voice-agent) **without ever
-tearing down the WebSocket**, by reconfiguring the live session with the
-`UpdateThink`, `UpdateSpeak`, and `UpdatePrompt` commands.
+A multi-agent voice system handles one call with several specialized behaviors:
+a router, a billing specialist, a technical specialist, instead of one overloaded
+prompt. On Deepgram you can build this **without opening a new session per agent**.
+Keep one [Voice Agent](https://developers.deepgram.com/docs/voice-agent) session
+open for the whole call and reconfigure it in place with the `UpdateThink`,
+`UpdateSpeak`, and `UpdatePrompt` commands.
 
-It is a companion to the
+A useful way to think about it: with this approach there isn't a fleet of separate
+agents, there is **one Voice Agent that switches roles** mid-call. That single
+detail is what keeps context and latency simple.
+
+This page is a companion to the
 [Multi-Agent Architecture](https://developers.deepgram.com/docs/multi-agent-architecture)
-guide, which builds the same idea by **opening a new agent session per agent** and
-summarizing the conversation across each handoff. Both work; this page explains
-the in-place alternative and when to prefer it.
+guide, which builds the same idea by opening a new agent session per agent and
+summarizing the conversation across each handoff. Both work; this page covers the
+in-place alternative and when to prefer it.
 
-> **TL;DR:** One WebSocket for the whole call. On handoff, send `UpdateThink`
+> **TL;DR:** One WebSocket for the whole call. To switch roles, send `UpdateThink`
 > (new prompt + tools + model) and optionally `UpdateSpeak` (new voice). The
-> conversation history is kept **server-side**, so the next agent already has the
-> full context, with **no summarizer, no reconnect, no dead air**, and the swap is
+> conversation history is kept **server-side**, so the next role already has the
+> full context: no summarizer, no reconnect, no dead air, and the swap is
 > measurably faster (roughly 3 to 5 times in our tests).
 
 ---
@@ -37,45 +41,13 @@ Deepgram's Voice Agent API can instead **reconfigure the running session**:
 
 | Command | Replaces | Use for |
 |---|---|---|
-| [`UpdateThink`](https://developers.deepgram.com/docs/voice-agent-update-think) | provider + model + prompt + functions (atomic) | **switching agents** |
-| [`UpdateSpeak`](https://developers.deepgram.com/docs/voice-agent-update-speak) | the TTS voice | giving an agent a distinct voice |
-| [`UpdatePrompt`](https://developers.deepgram.com/docs/voice-agent-update-prompt) | *appends* to the prompt (does not replace) | injecting dynamic context mid-agent |
+| [`UpdateThink`](https://developers.deepgram.com/docs/voice-agent-update-think) | provider + model + prompt + functions (atomic) | **switching roles** |
+| [`UpdateSpeak`](https://developers.deepgram.com/docs/voice-agent-update-speak) | the TTS voice | giving a role a distinct voice |
+| [`UpdatePrompt`](https://developers.deepgram.com/docs/voice-agent-update-prompt) | *appends* to the prompt (does not replace) | injecting dynamic context mid-role |
 
 Because the session never closes, the conversation transcript persists on
-Deepgram's side and is replayed to whichever model is active. Switching agents
+Deepgram's side and is replayed to whichever model is active. Switching roles
 becomes "swap the brain," not "start a new call."
-
----
-
-## Architecture overview
-
-```
-           Browser / phone  (mic + speaker)
-                           │
-                           │  audio in/out, continuous (never interrupted)
-                           ▼
-   ┌──────────────────────────────────────────────┐
-   │               Your app / proxy               │
-   │       Orchestrator: routing + handoff        │
-   └───────────────────────┬──────────────────────┘
-                           │
-                           │  on transfer_to_agent(target):
-                           │    1. UpdateThink  (prompt + tools + model)
-                           │    2. UpdateSpeak  (voice, if target sets one)
-                           ▼
-   ┌──────────────────────────────────────────────┐
-   │             Deepgram Voice Agent             │
-   │         (one session, never closed)          │
-   │                                              │
-   │         Listen  ->  Think  ->  Speak         │
-   │                                              │
-   │    conversation history kept server-side,    │
-   │     replayed to whatever model is active     │
-   └──────────────────────────────────────────────┘
-```
-
-The orchestrator never manages multiple connections, audio bridging across
-sessions, or context summarization. It owns one socket and sends Update commands.
 
 ---
 
@@ -85,10 +57,10 @@ sessions, or context summarization. It owns one socket and sends Update commands
 
 A single message replaces the entire think configuration mid-session and the
 server acknowledges with `ThinkUpdated`. Because provider and model are part of
-it, **each agent can run its own model, even its own provider**: a cheap, fast
+it, **each role can run its own model, even its own provider**: a cheap, fast
 router can hand off to a stronger specialist model mid-call. `UpdateSpeak` swaps
 the voice the same way; `UpdatePrompt` *appends* to the prompt without replacing
-it (handy for injecting dynamic context within an agent).
+it (handy for injecting dynamic context within a role).
 
 ### Conversation history lives server-side, so there's no summarizer
 
@@ -105,191 +77,161 @@ needs a summarization step on every transfer.
 
 ---
 
-## One way to implement it
+## Architecture overview
 
-Here is how you could build multi-agent handoff on top of those commands. The
-`Agent` and `Orchestrator` below are a small amount of example code (in this
-sample, not the SDK); an agent is essentially a bundle of an `UpdateThink` payload
-and an `UpdateSpeak` payload.
+```
+           Browser / phone  (mic + speaker)
+                           │
+                           │  audio in/out, continuous (never interrupted)
+                           ▼
+   ┌──────────────────────────────────────────────┐
+   │                   Your app                   │
+   │       route the call, swap the config        │
+   └───────────────────────┬──────────────────────┘
+                           │
+                           │  on transfer(to):
+                           │    1. UpdateThink  (prompt + tools + model)
+                           │    2. UpdateSpeak  (voice, if the role sets one)
+                           ▼
+   ┌──────────────────────────────────────────────┐
+   │             Deepgram Voice Agent             │
+   │         (one session, never closed)          │
+   │                                              │
+   │         Listen  ->  Think  ->  Speak         │
+   │                                              │
+   │    conversation history kept server-side,    │
+   │     replayed to whatever model is active     │
+   └──────────────────────────────────────────────┘
+```
+
+Your app holds one socket open and sends Update commands. There is no second
+connection to manage, no audio to bridge between sessions, and no context to
+summarize.
+
+---
+
+## Swapping roles: the basic approach
+
+You don't need any framework. Define each role as plain data (a prompt, the tools
+it can use, and optionally its own voice/model), give the model a function it can
+call to hand off, and on that call send the Update messages for the target role.
 
 ```python
-@dataclass
-class Agent:
-    name: str
-    prompt: str
-    model: str | None = None        # e.g. "gpt-4o-mini", "claude-sonnet-4-..."
-    provider: str | None = None     # e.g. "open_ai", "anthropic"
-    voice: str | None = None        # omit to inherit the current voice
-    tools: list[Tool] = ...
-    transfers_to: dict[str, str] = ...   # {target: when to use}  derives the transfer tool
+import json
+
+# A "role" is just a think config (prompt + tools, optionally its own model) and
+# a voice. Omit the voice to keep the current one (the caller hears one person).
+TRANSFER = {
+    "name": "transfer",
+    "description": ("Hand the caller to another specialist: 'billing', 'tech', or "
+                    "'router'. Call this silently; the next specialist continues."),
+    "parameters": {"type": "object",
+                   "properties": {"to": {"type": "string",
+                                         "enum": ["billing", "tech", "router"]}},
+                   "required": ["to"]},
+}
+
+ROLES = {
+    "router": {
+        "prompt": "You are the front desk for Acme Support. Route the caller to "
+                  "billing or tech. Keep replies to one sentence.",
+        "voice": "aura-2-asteria-en",
+        "functions": [TRANSFER],
+    },
+    "billing": {
+        "prompt": "You are continuing as the same assistant, now handling billing. "
+                  "Do not reintroduce yourself. Use get_balance for balances.",
+        "voice": None,                       # inherit the current voice -> seamless
+        "functions": [GET_BALANCE, TRANSFER],
+    },
+    "tech": {
+        "prompt": "You are a technical specialist. Introduce yourself in one short "
+                  "sentence, then help troubleshoot.",
+        "voice": "aura-2-orion-en",          # its own voice -> distinct specialist
+        "provider": "anthropic",             # and its own model, on another provider
+        "model": "claude-sonnet-4-20250514",
+        "functions": [RUN_DIAGNOSTIC, TRANSFER],
+    },
+}
 ```
 
-### A derived `transfer_to_agent` tool
-
-The orchestrator generates one `transfer_to_agent` function (with the reachable
-targets as an enum) from each agent's `transfers_to` edges, and intercepts the
-call to drive the handoff, so you don't hand-write the tool schema.
-
-### Swap before you respond (the smooth-handoff trick)
-
-When the model calls `transfer_to_agent`, answer it *last*, not first:
-
-1. Send `UpdateThink` for the target, then wait for `ThinkUpdated`.
-2. If the target declares its own voice, send `UpdateSpeak` and wait for `SpeakUpdated`.
-3. **Then** answer the tool call (`FunctionCallResponse`).
-
-Answering the tool call is what triggers the model's next turn, and by then the
-*new* agent is active, so its follow-up is the first thing spoken. The outgoing
-agent is told (in the transfer tool's description) to hand off silently. The
-result: no repeated "one moment" line, no double-greeting.
-
-### Distinct vs. seamless, from config
-
-How a handoff *feels* falls out of the agent config, with no extra setting:
-
-- **Voice:** set an agent's `voice` and the caller hears a distinct specialist;
-  omit it and the agent inherits the current voice, so the caller keeps hearing
-  one person.
-- **Prompt:** the incoming agent's prompt decides whether it introduces itself
-  ("I'm technical support...") or just continues ("...keep helping as the same
-  assistant").
-
-This lets you **mix within one graph**: a "super-agent" of several configs that
-share a voice and continue seamlessly, alongside a clearly separate specialist
-with its own voice.
-
----
-
-## The agents (example)
-
-| Agent | Model | Voice | Role |
-|-------|-------|-------|------|
-| `triage` (entry) | `gpt-4o-mini` | `aura-2-asteria-en` | Routes the caller |
-| `billing` | `gpt-4o-mini` | *(inherits triage's)* | Balances, charges, refunds |
-| `tech` | `claude-sonnet-4` | `aura-2-orion-en` | Troubleshooting |
-
-`triage` + `billing` share a voice and use "continue" prompts, so the caller
-perceives **one assistant that gains billing tools**. `tech` has its own voice and
-model, so it's perceived as a **distinct specialist**, all from config.
+Switching roles is two messages and their acknowledgements:
 
 ```python
-from orchestrator import Agent, Tool, Orchestrator
+async def switch_role(ws, target, current_voice):
+    role = ROLES[target]
 
-triage = Agent(
-    name="triage", voice="aura-2-asteria-en",
-    prompt="You are the assistant for Acme Support. Route billing vs technical...",
-    greeting="Hi, thanks for calling Acme Support! How can I help?",
-    transfers_to={"billing": "charges, balances, refunds",
-                  "tech": "technical problems, errors, outages"},
-)
+    # 1. Swap the brain: prompt + tools + (optional) model.
+    await ws.send(json.dumps({
+        "type": "UpdateThink",
+        "think": {
+            "provider": {"type": role.get("provider", "open_ai"),
+                         "model":  role.get("model", "gpt-4o-mini")},
+            "prompt": role["prompt"],
+            "functions": role["functions"],
+        },
+    }))
+    await wait_for(ws, "ThinkUpdated")
 
-billing = Agent(                       # voice omitted, so it stays seamless
-    name="billing",
-    prompt="You are continuing as the same assistant, now handling billing...",
-    tools=[Tool("get_account_balance", "Look up the balance.",
-                {"type": "object", "properties": {}}, get_account_balance)],
-    transfers_to={"tech": "technical issues", "triage": "anything else"},
-)
+    # 2. Swap the voice only if this role declares its own.
+    if role["voice"] and role["voice"] != current_voice:
+        await ws.send(json.dumps({
+            "type": "UpdateSpeak",
+            "speak": {"provider": {"type": "deepgram", "model": role["voice"]}},
+        }))
+        await wait_for(ws, "SpeakUpdated")
+        current_voice = role["voice"]
 
-tech = Agent(
-    name="tech", voice="aura-2-orion-en",
-    provider="anthropic", model="claude-sonnet-4-20250514",   # its own brain
-    prompt="You are a technical specialist. Introduce yourself briefly, then help...",
-    tools=[Tool("run_diagnostic", "Run a device health check.",
-                {"type": "object", "properties": {}}, run_diagnostic)],
-    transfers_to={"billing": "billing questions", "triage": "anything else"},
-)
-
-orch = Orchestrator([triage, billing, tech], entry="triage",
-                    send=send, think_provider={"type": "open_ai", "model": "gpt-4o-mini"})
+    return current_voice
 ```
 
-The `transfer_to_agent` tool and routing are **derived automatically** from each
-agent's `transfers_to` edges; you don't hand-write the tool schema.
+Then trigger it when the model calls your `transfer` function:
 
----
-
-## Implementation details
-
-### The Update messages
-
-```jsonc
-// Swap the brain: provider + model + prompt + functions (full replace)
-{ "type": "UpdateThink",
-  "think": { "provider": { "type": "anthropic", "model": "claude-sonnet-4-20250514" },
-             "prompt": "You are a technical specialist...",
-             "functions": [ /* this agent's tools */ ] } }
-
-// Swap the voice (only when the target declares one)
-{ "type": "UpdateSpeak",
-  "speak": { "provider": { "type": "deepgram", "model": "aura-2-orion-en" } } }
+```python
+if fn["name"] == "transfer":
+    target = json.loads(fn["arguments"])["to"]
+    current_voice = await switch_role(ws, target, current_voice)   # swap first
+    await ws.send(json.dumps({                                     # then answer the call
+        "type": "FunctionCallResponse",
+        "id": fn["id"], "name": "transfer",
+        "content": json.dumps({"status": "transferred"}),
+    }))
 ```
 
-The server acknowledges with `ThinkUpdated` and `SpeakUpdated` respectively.
+That's the whole mechanism. Three details make it smooth:
 
-### The handoff sequence
-
-```
-FunctionCallRequest(transfer_to_agent)
-  → UpdateThink(target prompt + tools + model)        → await ThinkUpdated
-  → UpdateSpeak(target voice)  [only if target sets one]  → await SpeakUpdated
-  → FunctionCallResponse(transferring)   (released last, so the NEW agent speaks next)
-```
-
-### Keep the session fed
-
-The Voice Agent socket expects a continuous audio stream; if it goes quiet for
-too long the server closes it (`CLIENT_MESSAGE_TIMEOUT`). A live mic or phone leg
-satisfies this naturally. If your transport can go silent (hold music, a pause),
-keep sending audio frames or `KeepAlive` messages, including across the handoff.
-
----
-
-## Quick start
-
-**Prerequisites**
-
-- A Deepgram API key in `.env` (`DEEPGRAM_API_KEY=...`).
-- Python 3.9+ and the dependencies in `requirements.txt`.
-- A modern browser (the sample uses the browser mic; no telephony required).
-
-**Run**
-
-```bash
-../.venv/bin/uvicorn main:app --reload --port 8000
-# open http://127.0.0.1:8000
-```
-
-Say *"what's my balance?"* and the assistant silently gains billing tools and
-answers in the **same** voice (seamless). Then say *"my laptop won't turn on"* and
-you're handed to `tech`, who introduces itself in a **different** voice (distinct
-specialist). The active agent, its voice, and its model are shown as a badge in
-the header.
-
-**Verify it without a microphone**
-
-```bash
-../.venv/bin/python selftest.py     # drives a full scenario via synthesized speech
-```
+- **Swap before you answer the function call.** Answering the `transfer` call is
+  what triggers the model's next turn. Do the `UpdateThink`/`UpdateSpeak` first, so
+  by the time you answer, the *new* role speaks next, not the old one. Tell the
+  model (in the tool description) to hand off silently, and you avoid a repeated
+  "one moment" line or a double-greeting.
+- **Omit a role's voice to keep things seamless.** With no `UpdateSpeak`, the
+  caller keeps hearing the same voice, so a router that gains billing tools feels
+  like one assistant. Give a role its own voice to make it a distinct specialist.
+  Whether it introduces itself is just a matter of what its prompt says.
+- **Keep the socket fed.** The Voice Agent socket expects continuous audio; if it
+  goes quiet too long the server closes it. A live mic or phone leg covers this. If
+  your transport can go silent, send audio frames or `KeepAlive` messages,
+  including across the handoff.
 
 ---
 
 ## Example conversation flow
 
 ```
-Agent (triage, asteria voice):  Hi, thanks for calling Acme Support! How can I help?
+Agent (router, asteria voice):  Hi, thanks for calling Acme Support! How can I help?
 You:                            Hi, I'm Sam Rivera. What's my account balance?
-                                [transfer_to_agent → billing]   (UpdateThink; voice inherited)
-Agent (billing, same voice):    Your balance is $1,234.56.      [get_account_balance]
+                                [transfer to billing]   (UpdateThink; voice inherited)
+Agent (billing, same voice):    Your balance is $1,234.56.   [get_balance]
 You:                            Actually my laptop won't turn on.
-                                [transfer_to_agent → tech]      (UpdateThink + UpdateSpeak)
+                                [transfer to tech]      (UpdateThink + UpdateSpeak)
 Agent (tech, orion voice):      I'm technical support, let's take a look. [run_diagnostic]
                                 All systems look nominal; is it plugged in and charging?
 ```
 
-Note that `billing` answered without re-greeting (same perceived person), `tech`
-introduced itself in a new voice, and neither agent needed the customer's name
-re-stated; it was already in the shared history.
+`billing` answered without re-greeting (same perceived person), `tech` introduced
+itself in a new voice, and neither needed the customer's name re-stated: it was
+already in the shared history.
 
 ---
 
@@ -301,52 +243,52 @@ re-stated; it was already in the shared history.
 | Conversation history | lost; must summarize + re-inject | **retained server-side** |
 | Extra context plumbing | summarizer LLM call per handoff | **none** |
 | Audio continuity | gap / dead air during reconnect | **uninterrupted** |
-| Per-agent model / provider | yes (new `Settings`) | yes (`UpdateThink`) |
+| Per-role model / provider | yes (new `Settings`) | yes (`UpdateThink`) |
 | Handoff latency (measured*) | **~948 ms** US / ~215 ms EU, **plus summarizer + audio re-stream** | **~300 ms** US / ~47 ms EU |
-| Context isolation between agents | yes (fresh session) | no (shared history) |
+| Context isolation between roles | yes (fresh session) | no (shared history) |
 
-\* Measured with `latency_test.py` (8 iterations, single client location). The
-reconnect figure is connection + `Settings` to `SettingsApplied` only; it does
-**not** include the summarizer call or re-streaming audio, both of which a real
-reconnect handoff also pays and in-place Update avoids. Seamless handoffs (no
-voice change) are even faster, just the `UpdateThink` round trip.
+\* Measured with the sample's `latency_test.py` (8 iterations, single client
+location). The reconnect figure is connection + `Settings` to `SettingsApplied`
+only; it does **not** include the summarizer call or re-streaming audio, both of
+which a real reconnect handoff also pays and in-place Update avoids. Seamless
+handoffs (no voice change) are even faster, just the `UpdateThink` round trip.
 
 ---
 
 ## When to use which
 
-**Prefer in-place Update** (this page) when you want the caller to experience one
-continuous conversation, low handoff latency, and minimal plumbing, the common
-case for routing, escalation, and specialist hand-offs.
+**Prefer in-place Update** when you want the caller to experience one continuous
+conversation, low handoff latency, and minimal plumbing: the common case for
+routing, escalation, and specialist hand-offs.
 
-**Reconnect-per-agent** (the original guide) still makes sense when you need:
+**Reconnect-per-agent** still makes sense when you need:
 
-- **Context isolation:** a specialist that must *not* see earlier turns (e.g.,
+- **Context isolation:** a role that must *not* see earlier turns (e.g.,
   compliance, or a clean-slate sub-task). Shared server-side history is
   all-or-nothing.
-- **A different audio profile:** `UpdateThink`/`UpdateSpeak` don't change the
-  audio encoding/sample rate or the STT model; a fresh `Settings` does.
+- **A different audio profile:** `UpdateThink`/`UpdateSpeak` don't change the audio
+  encoding/sample rate or the STT model; a fresh `Settings` does.
 
-A couple of operational notes for the Update approach:
+Two operational notes for the Update approach:
 
 - **History grows for the whole call.** It's automatic, but very long sessions
   accumulate tokens; consider `UpdatePrompt`-based compaction for marathon calls.
 - **Function-calling reliability varies by model.** The handoff depends on the
-  model emitting the `transfer_to_agent` call; test each model you route to.
+  model emitting the `transfer` call; test each model you route to.
 
 ---
 
-## Project structure
+## Going further
 
-```
-agents.py         Personas, declared with Agent / Tool (your config)
-orchestrator.py   Agent, Tool, Orchestrator: derives the transfer tool, owns the
-                  in-place handoff (the reusable core)
-main.py           FastAPI proxy: browser to Deepgram, feeds events to the orchestrator
-static/index.html Browser UI (mic capture, playback, active-agent badge)
-selftest.py       Mic-free end-to-end test (synthesized speech)
-latency_test.py   In-place Update vs reconnect latency benchmark
-```
+The code above is all you need. If you find yourself adding many roles, you'll
+probably want to factor the role table and the swap sequence into a small helper,
+for example a config type plus a `switch_role()` that also derives the `transfer`
+tool's target list from each role's allowed destinations.
+
+The sample in this repository includes one such helper (see `orchestrator.py`),
+along with a browser UI, a mic-free end-to-end test (`selftest.py`), and the
+latency benchmark (`latency_test.py`). Treat it as one example of organizing the
+mechanism, not a required structure.
 
 ---
 
