@@ -19,14 +19,6 @@ the in-place alternative and when to prefer it.
 > full context, with **no summarizer, no reconnect, no dead air**, and the swap is
 > measurably faster (roughly 3 to 5 times in our tests).
 
-> **Scope and assumptions.** The `UpdateThink` / `UpdateSpeak` / `UpdatePrompt`
-> commands are Deepgram **API primitives** and are unopinionated, you can use them
-> directly. The `Agent` / `Orchestrator` shown on this page is **example code**
-> (it lives in this sample, not in the SDK) that wraps those primitives with some
-> specific **design decisions**, each flagged below as a "Design decision" with
-> alternatives. Treat the primitives as the contract and the orchestrator as one
-> reasonable way to organize them; your own wrapper may make different choices.
-
 ---
 
 ## Why in-place updates?
@@ -58,27 +50,28 @@ becomes "swap the brain," not "start a new call."
 ## Architecture overview
 
 ```
-        Browser / phone  (mic + speaker)
-                 │   audio streams continuously, never interrupted
-                 ▼
-   ┌─────────────────────────────────┐
-   │        Your app / proxy         │      ─ ONE WebSocket, entire call ───┐
-   │   ┌─────────────────────────┐   │                                      │
-   │   │      Orchestrator       │   │   on transfer_to_agent(target):      │
-   │   │  routing • handoff      │   │     1. UpdateThink  (prompt+tools+    │
-   │   └─────────────────────────┘   │                       model)         │
-   └─────────────────────────────────┘     2. UpdateSpeak  (voice, if the   │
-                 │                                            target sets one)│
-                 ▼                                                            │
-   ┌──────────────────────────────────────────────────────────────┐         │
-   │      Deepgram Voice Agent  (single session)  ◄─────────────────┼─────────┘
-   │                                                                │
-   │     Listen ──► Think ──► Speak                                 │
-   │                                                                │
-   │     conversation history kept SERVER-SIDE  ───►  replayed to   │
-   │                                                  whatever model│
-   │                                                  is active now │
-   └──────────────────────────────────────────────────────────────┘
+           Browser / phone  (mic + speaker)
+                           │
+                           │  audio in/out, continuous (never interrupted)
+                           ▼
+   ┌──────────────────────────────────────────────┐
+   │               Your app / proxy               │
+   │       Orchestrator: routing + handoff        │
+   └───────────────────────┬──────────────────────┘
+                           │
+                           │  on transfer_to_agent(target):
+                           │    1. UpdateThink  (prompt + tools + model)
+                           │    2. UpdateSpeak  (voice, if target sets one)
+                           ▼
+   ┌──────────────────────────────────────────────┐
+   │             Deepgram Voice Agent             │
+   │         (one session, never closed)          │
+   │                                              │
+   │         Listen  ->  Think  ->  Speak         │
+   │                                              │
+   │    conversation history kept server-side,    │
+   │     replayed to whatever model is active     │
+   └──────────────────────────────────────────────┘
 ```
 
 The orchestrator never manages multiple connections, audio bridging across
@@ -86,9 +79,7 @@ sessions, or context summarization. It owns one socket and sends Update commands
 
 ---
 
-## The primitives (Deepgram API, unopinionated)
-
-These hold no matter how you structure your code.
+## The Update commands
 
 ### `UpdateThink` swaps provider + model + prompt + functions, atomically
 
@@ -114,15 +105,16 @@ needs a summarization step on every transfer.
 
 ---
 
-## Design decisions in this example (you can choose differently)
+## One way to implement it
 
-Everything below is a choice the sample's `Agent` / `Orchestrator` makes on top of
-the primitives. The `Agent` class itself is just a convenient bundle of an
-`UpdateThink` payload and an `UpdateSpeak` payload; it is not part of the API.
+Here is how you could build multi-agent handoff on top of those commands. The
+`Agent` and `Orchestrator` below are a small amount of example code (in this
+sample, not the SDK); an agent is essentially a bundle of an `UpdateThink` payload
+and an `UpdateSpeak` payload.
 
 ```python
 @dataclass
-class Agent:                        # example abstraction, not the API
+class Agent:
     name: str
     prompt: str
     model: str | None = None        # e.g. "gpt-4o-mini", "claude-sonnet-4-..."
@@ -132,17 +124,15 @@ class Agent:                        # example abstraction, not the API
     transfers_to: dict[str, str] = ...   # {target: when to use}  derives the transfer tool
 ```
 
-### Design decision: a derived `transfer_to_agent` tool
+### A derived `transfer_to_agent` tool
 
 The orchestrator generates one `transfer_to_agent` function (with the reachable
 targets as an enum) from each agent's `transfers_to` edges, and intercepts the
-call to drive the handoff. **Alternative:** define your own transfer tools per
-agent, or trigger handoffs from your own logic instead of a model-called tool.
+call to drive the handoff, so you don't hand-write the tool schema.
 
-### Design decision: swap before you respond (the smooth-handoff trick)
+### Swap before you respond (the smooth-handoff trick)
 
-When the model calls `transfer_to_agent`, the orchestrator does **not** answer it
-first. Instead:
+When the model calls `transfer_to_agent`, answer it *last*, not first:
 
 1. Send `UpdateThink` for the target, then wait for `ThinkUpdated`.
 2. If the target declares its own voice, send `UpdateSpeak` and wait for `SpeakUpdated`.
@@ -151,13 +141,11 @@ first. Instead:
 Answering the tool call is what triggers the model's next turn, and by then the
 *new* agent is active, so its follow-up is the first thing spoken. The outgoing
 agent is told (in the transfer tool's description) to hand off silently. The
-result: no repeated "one moment" line, no double-greeting. **Alternative:** answer
-first and let the outgoing agent speak a transition line, if you want an explicit
-"transferring you now."
+result: no repeated "one moment" line, no double-greeting.
 
-### Design decision: distinct vs. seamless is emergent (no mode flag)
+### Distinct vs. seamless, from config
 
-How a handoff *feels* comes from configuration you already write, not a setting:
+How a handoff *feels* falls out of the agent config, with no extra setting:
 
 - **Voice:** set an agent's `voice` and the caller hears a distinct specialist;
   omit it and the agent inherits the current voice, so the caller keeps hearing
@@ -168,8 +156,7 @@ How a handoff *feels* comes from configuration you already write, not a setting:
 
 This lets you **mix within one graph**: a "super-agent" of several configs that
 share a voice and continue seamlessly, alongside a clearly separate specialist
-with its own voice. **Alternative:** make it explicit, for example always send
-`UpdateSpeak` per agent, or add your own "announce vs silent" flag.
+with its own voice.
 
 ---
 
