@@ -74,6 +74,10 @@ uvicorn main:app --reload --port 8000
 
 ## Multi-agent transfers
 
+> 📄 For a shareable, docs-style explainer (architecture, advantages, latency,
+> when to use which), see
+> [`docs/multi-agent-with-updates.md`](docs/multi-agent-with-updates.md).
+
 Personas (`agents.py`) share one WebSocket session. The orchestrator derives the
 `transfer_to_agent` tool and routing from each agent's `transfers_to` edges:
 
