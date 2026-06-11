@@ -21,7 +21,7 @@ in-place alternative and when to prefer it.
 > (new prompt + tools + model) and optionally `UpdateSpeak` (new voice). The
 > conversation history is kept **server-side**, so the next role already has the
 > full context: no summarizer, no reconnect, no dead air, and the swap is
-> measurably faster (roughly 3 to 5 times in our tests).
+> measurably faster (roughly 4 to 5 times in our tests).
 
 ---
 
@@ -244,14 +244,15 @@ already in the shared history.
 | Extra context plumbing | summarizer LLM call per handoff | **none** |
 | Audio continuity | gap / dead air during reconnect | **uninterrupted** |
 | Per-role model / provider | yes (new `Settings`) | yes (`UpdateThink`) |
-| Handoff latency (measured*) | **~948 ms** US / ~215 ms EU, **plus summarizer + audio re-stream** | **~300 ms** US / ~47 ms EU |
+| Handoff latency (measured*) | **~215 ms**, **plus summarizer + audio re-stream** | **~47 ms** |
 | Context isolation between roles | yes (fresh session) | no (shared history) |
 
-\* Measured with the sample's `latency_test.py` (8 iterations, single client
-location). The reconnect figure is connection + `Settings` to `SettingsApplied`
-only; it does **not** include the summarizer call or re-streaming audio, both of
-which a real reconnect handoff also pays and in-place Update avoids. Seamless
-handoffs (no voice change) are even faster, just the `UpdateThink` round trip.
+\* Measured with the sample's `latency_test.py` (8 iterations). Absolute numbers
+depend on network distance to the region; the ratio is what matters. The
+reconnect figure is connection + `Settings` to `SettingsApplied` only; it does
+**not** include the summarizer call or re-streaming audio, both of which a real
+reconnect handoff also pays and in-place Update avoids. Seamless handoffs (no
+voice change) are even faster, just the `UpdateThink` round trip.
 
 ---
 
