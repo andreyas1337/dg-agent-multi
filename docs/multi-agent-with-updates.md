@@ -1,10 +1,10 @@
-# Multi-Agent Voice Architecture with In-Place Updates
+# Multi-Agent Voice Architecture with Mid-Session Updates
 
 A multi-agent voice system handles one call with several specialized behaviors:
 a router, a billing specialist, a technical specialist, instead of one overloaded
 prompt. On Deepgram you can build this **without opening a new session per agent**.
 Keep one [Voice Agent](https://developers.deepgram.com/docs/voice-agent) session
-open for the whole call and reconfigure it in place with the `UpdateThink`,
+open for the whole call and reconfigure it mid-session with the `UpdateThink`,
 `UpdateSpeak`, and `UpdatePrompt` commands.
 
 A useful way to think about it: with this approach there isn't a fleet of separate
@@ -15,7 +15,7 @@ This page is a companion to the
 [Multi-Agent Architecture](https://developers.deepgram.com/docs/multi-agent-architecture)
 guide, which builds the same idea by opening a new agent session per agent and
 summarizing the conversation across each handoff. Both work; this page covers the
-in-place alternative and when to prefer it.
+mid-session alternative and when to prefer it.
 
 > **TL;DR:** One WebSocket for the whole call. To switch roles, send `UpdateThink`
 > (new prompt + tools + model) and optionally `UpdateSpeak` (new voice). The
@@ -25,7 +25,7 @@ in-place alternative and when to prefer it.
 
 ---
 
-## Why in-place updates?
+## Why mid-session updates?
 
 The classic way to run multiple agents is to spin up a fresh Voice Agent session
 for each one. That works, but every handoff pays for:
@@ -237,7 +237,7 @@ already in the shared history.
 
 ## Advantages over reconnect-per-agent
 
-| | Reconnect per agent | In-place Update |
+| | Reconnect per agent | Mid-Session Update |
 |---|---|---|
 | Sessions | new WebSocket each agent | **one**, whole call |
 | Conversation history | lost; must summarize + re-inject | **retained server-side** |
@@ -251,14 +251,14 @@ already in the shared history.
 depend on network distance to the region; the ratio is what matters. The
 reconnect figure is connection + `Settings` to `SettingsApplied` only; it does
 **not** include the summarizer call or re-streaming audio, both of which a real
-reconnect handoff also pays and in-place Update avoids. Seamless handoffs (no
+reconnect handoff also pays and mid-session Update avoids. Seamless handoffs (no
 voice change) are even faster, just the `UpdateThink` round trip.
 
 ---
 
 ## When to use which
 
-**Prefer in-place Update** when you want the caller to experience one continuous
+**Prefer mid-session Update** when you want the caller to experience one continuous
 conversation, low handoff latency, and minimal plumbing: the common case for
 routing, escalation, and specialist hand-offs.
 

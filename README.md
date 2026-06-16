@@ -5,7 +5,7 @@ browser and Deepgram's [Voice Agent API](https://developers.deepgram.com/docs/vo
 over a WebSocket.
 
 > **`multi` branch:** this branch turns the single agent into a **multi-agent**
-> system (front desk → billing / technical support) using in-place transfers.
+> system (front desk → billing / technical support) using mid-session transfers.
 > See [Multi-agent transfers](#multi-agent-transfers) below.
 
 The agents are configured in `agents.py`:
@@ -102,11 +102,11 @@ orch = Orchestrator([triage, billing, tech], entry="triage",
 await send(orch.initial_settings(audio))   # then feed every DG event to orch.handle()
 ```
 
-When an agent calls `transfer_to_agent`, the session is **reconfigured in place**
+When an agent calls `transfer_to_agent`, the session is **reconfigured mid-session**
 — the WebSocket is never torn down and the conversation history carries across
 automatically, so there's no reconnect and no summarization step. (Verified in
 `selftest.py`: a name given to triage is recalled by billing after the swap.)
-It's also faster: `latency_test.py` measures the in-place swap at ~3–5× quicker
+It's also faster: `latency_test.py` measures the mid-session swap at ~3–5× quicker
 than opening a fresh agent session (and that's before counting the audio
 re-stream and context re-pass a reconnect would also need).
 
@@ -169,7 +169,7 @@ silently.
 - **`selftest.py`** — mic-free end-to-end test (TTS-synthesized user speech):
   transfers fire, no duplicated lines, history retained (incl. cross-provider).
   Run: `../.venv/bin/python selftest.py` (or `selftest.py smoke`).
-- **`latency_test.py`** — handoff-latency benchmark: in-place Update vs
+- **`latency_test.py`** — handoff-latency benchmark: mid-session Update vs
   reconnect. `../.venv/bin/python latency_test.py [iterations]`
   (`DG_AGENT_HOST=api.eu.deepgram.com` to test the EU region).
 
