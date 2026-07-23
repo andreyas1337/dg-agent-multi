@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import asyncio
+import importlib.util
 import json
 import os
 import sys
@@ -28,8 +29,18 @@ import urllib.request
 import websockets
 from dotenv import load_dotenv
 
-from agents import AGENTS, ENTRY, THINK_PROVIDER, LISTEN_MODEL
 from orchestrator import Orchestrator
+
+# Load the Acme Support scenario definition by path (its folder name is hyphenated).
+_spec = importlib.util.spec_from_file_location(
+    "agents_scenario",
+    os.path.join(os.path.dirname(__file__), "scenarios", "acme-support", "acme_support.py"),
+)
+_scn = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_scn)
+AGENTS, ENTRY, THINK_PROVIDER, LISTEN_MODEL = (
+    _scn.AGENTS, _scn.ENTRY, _scn.THINK_PROVIDER, _scn.LISTEN_MODEL
+)
 
 load_dotenv()
 KEY = os.environ["DEEPGRAM_API_KEY"]
@@ -184,7 +195,10 @@ async def main(smoke: bool) -> None:
     print(f"  duplicate agent lines: {len(dups)}  {dups if dups else '(none ✓)'}")
     print(f"  voice switches       : {voice_switches}  (expect 1 — only entering tech)")
     if not smoke:
-        print(f"  history survived?    : name={'rivera' in assistant or 'sam' in assistant}  balance={'1,234' in assistant}")
+        # Balance may be spoken as digits ("1,234") or as words ("...thirty-four
+        # dollars and fifty-six cents") — the voice-style prompt says numbers as words.
+        balance_ok = "1,234" in assistant or "thirty-four" in assistant or "thirty four" in assistant
+        print(f"  history survived?    : name={'rivera' in assistant or 'sam' in assistant}  balance={balance_ok}")
         if tech_idx is not None:
             tech_said = " ".join(assistant_lines[tech_idx:]).lower()
             print(f"  X-PROVIDER history?  : tech (anthropic) recalled name = {'rivera' in tech_said or 'sam' in tech_said}")

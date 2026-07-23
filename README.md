@@ -8,11 +8,11 @@ over a WebSocket.
 > system (front desk → billing / technical support) using mid-session transfers.
 > See [Multi-agent transfers](#multi-agent-transfers) below.
 
-The agents are configured in `agents.py`:
+The agents are configured in `scenarios/acme-support/acme_support.py`:
 
 - **Listen:** Deepgram `nova-3` (speech-to-text)
 - **Think:** per agent — `gpt-4o-mini` by default; `tech` runs Anthropic
-  `claude-sonnet-4` (the Anthropic model is served via Deepgram, so the
+  `claude-sonnet-4-5` (the Anthropic model is served via Deepgram, so the
   `DEEPGRAM_API_KEY` is the only credential needed)
 - **Speak:** Deepgram Aura-2 — a distinct voice for `tech`; `billing` inherits
   `triage`'s voice (seamless)
@@ -72,13 +72,41 @@ uvicorn main:app --reload --port 8000
 - Audio I/O: 16 kHz linear16 input from the browser, 24 kHz linear16 output
   from the agent.
 
+## Scenario mode (single agent from a JSON file)
+
+For a one-off demo you usually want **one** agent whose persona you can tweak
+without touching Python. Scenarios live in [`scenarios/`](scenarios/) — one folder
+each, pairing a raw Voice Agent `Settings` JSON with its "call script" (what to say
+during the demo). See [`scenarios/README.md`](scenarios/README.md) for the layout
+and how to add one.
+
+Set `SCENARIO_FILE` in `.env` to a scenario name and the proxy runs it verbatim:
+
+```bash
+SCENARIO_FILE=brightmoor-homecare   # -> scenarios/brightmoor-homecare/settings.json
+```
+
+Editing that JSON (prompt, greeting, voice, `keyterms`, …) is the whole workflow.
+Unset `SCENARIO_FILE` to fall back to the multi-agent orchestrator demo below.
+
+Notes:
+
+- **Audio is transport-owned.** `load_scenario()` stamps the proxy's `AUDIO`
+  block (raw `linear16` PCM, `container: none`) over whatever the file declares —
+  a `wav` container would corrupt the browser's AudioWorklet playback.
+- **Built-in LLM limits.** `agent.think.context_length` is only valid with a
+  BYO LLM endpoint; with a built-in model (e.g. `open_ai`/`gpt-4o-mini`) the API
+  rejects it. Omit it.
+- **Keyterm spelling.** The Voice Agent listen provider uses `keyterms` (plural).
+  The separate STT socket (below) passes them through as the v1 `keyterm` param.
+
 ## Multi-agent transfers
 
 > 📄 For a shareable, docs-style explainer (architecture, advantages, latency,
 > when to use which), see
 > [`docs/multi-agent-with-updates.md`](docs/multi-agent-with-updates.md).
 
-Personas (`agents.py`) share one WebSocket session. The orchestrator derives the
+Personas (`scenarios/acme-support/acme_support.py`) share one WebSocket session. The orchestrator derives the
 `transfer_to_agent` tool and routing from each agent's `transfers_to` edges:
 
 ```python
@@ -119,12 +147,12 @@ An `Agent` is effectively an `UpdateThink` payload (provider + model + prompt +
 functions) plus an `UpdateSpeak` payload (voice). So each agent can declare its
 own `model`/`provider`: a cheap, fast router can hand off to a stronger specialist
 model mid-call. In this sample `triage`/`billing` run `gpt-4o-mini` while `tech`
-runs Anthropic `claude-sonnet-4`:
+runs Anthropic `claude-sonnet-4-5`:
 
 ```python
 tech = Agent(
     name="tech", voice="aura-2-orion-en",
-    provider="anthropic", model="claude-sonnet-4-20250514",   # its own brain
+    provider="anthropic", model="claude-sonnet-4-5",   # its own brain
     prompt="You are a technical support specialist...",
     tools=[Tool("run_diagnostic", ...)],
     transfers_to={"billing": "...", "triage": "..."},
@@ -158,9 +186,23 @@ the transfer tool call, so the *new* agent's follow-up is the first thing spoken
 — no repeated "one moment" line — and the outgoing agent is told to transfer
 silently.
 
+**Announced handoffs.** Silent transfer is ideal for a seamless, shared-voice
+handoff, but when the voice changes a silent swap feels abrupt. Set
+`announce_transfer=True` (and a `handoff_line`) on an agent to have it say
+"let me hand you over to an advisor" *before* the voice switches.
+
+The line can't come from the model's own turn: a Voice Agent turn is **either**
+speech **or** a tool call, so any "I'll transfer you" wording in the prompt makes
+the model talk *instead of* calling the transfer tool (the transfer then never
+fires). So the tool call stays **silent**, and the **orchestrator injects** the
+handoff line (`InjectAgentMessage`) in the outgoing agent's voice, waits for its
+`AgentAudioDone`, and only then swaps the voice — announced, and no talk-over. See
+the `financial-advisory` qualifier.
+
 ### Files
 
-- **`agents.py`** — the personas, declared with `Agent` / `Tool`. User config.
+- **`scenarios/acme-support/acme_support.py`** — the personas, declared with `Agent` /
+  `Tool`. Scenario definition (see also `scenarios/README.md`).
 - **`orchestrator.py`** — `Agent`, `Tool`, `Orchestrator`: the typed surface plus
   the transfer-handshake engine. This is the reusable piece — a candidate to live
   in the Deepgram SDK.
@@ -177,39 +219,77 @@ Try it: ask "what's my balance?" — the assistant silently gains billing tools 
 answers in the *same* voice (seamless); then say "my laptop won't turn on" and you
 hand off to `tech`, who introduces itself in a *different* voice (distinct specialist).
 
-## Live (interim) transcripts via Flux
+## Live (interim) transcripts
 
 Controlled by the **Interim** toggle in the UI header (per session; locked while
-a conversation is running). `ENABLE_FLUX_INTERIM` in `.env` only seeds the
-toggle's *initial* position — the user's choice is then remembered in
-`localStorage`. When off, user turns are shown from the agent's own final
-`ConversationText`.
+a conversation is running). `ENABLE_INTERIM` in `.env` seeds the toggle's
+*initial* position; the user's choice is then remembered in `localStorage`. When
+off, user turns are shown from the agent's own final `ConversationText`.
 
-The Voice Agent socket only emits **final** user turns (`ConversationText`) —
-it has no interim/partial transcript event. To show text *as you speak*, the
-proxy opens a second, parallel STT connection to Deepgram **Flux**
-(`wss://api.deepgram.com/v2/listen?model=flux-general-multi`) and feeds it the
-same mic audio.
+The Voice Agent socket only emits **final** user turns (`ConversationText`),
+**regardless of its listen model** — it has no interim/partial event. So showing
+text *as you speak* always needs a **second STT socket** fed the same mic audio.
+`INTERIM_PROVIDER` picks which model backs it:
+
+| `INTERIM_PROVIDER` | Endpoint | What you get |
+|---|---|---|
+| `auto` (default) | — | Follows the agent's listen model family: `flux-*` → flux, otherwise → nova. Keeps the live transcript's turn boundaries consistent with what the agent hears. |
+| `nova` | `/v1/listen` | Native `interim_results` + `smart_format`, and it **reuses the scenario's `keyterms`** (medication names get boosted in the live transcript too). |
+| `flux` | `/v2/listen` | Semantic turn events (`StartOfTurn`/`EndOfTurn`). Separate model; no smart formatting. |
+
+> **Why `auto`?** flux's `EndOfTurn` (semantic turn detection) and nova's
+> `speech_final` (silence-based endpointing) mark turn ends differently. If the
+> agent runs flux but the interim socket runs nova (or vice-versa), the "final"
+> line in the panel can land at a different moment than the agent's real turn end.
+> `auto` keeps them on the same engine so the boundaries line up. The proxy also
+> guards against invalid combos (never sends a flux model to `/v1/listen`).
 
 Wiring:
 
-- `GET /config` returns `{ "fluxInterimDefault": <bool> }` — the toggle's default.
-- On **Start**, the client connects to `ws://…/ws?interim=1` (or `0`). The proxy
-  opens Flux only when `interim=1`.
-- The proxy then sends a `ProxyConfig` message reporting the **actual** state
-  (`fluxInterim`), so if Flux couldn't connect the client still shows the agent's
-  user transcript instead of suppressing it.
-- Frontend renders user speech from Flux: an italic/dimmed interim bubble that
-  updates on each `Update`, then solidifies on `EndOfTurn`.
+- `GET /config` returns `{ "interimDefault": <bool>, "interimProvider": "nova" }`.
+- On **Start**, the client connects to `ws://…/ws?interim=1` (or `0`); the proxy
+  opens the STT socket only when `interim=1`.
+- Both providers are **normalized** server-side into one `Interim` event
+  `{ text, final }`. nova accumulates `is_final` segments and ends a turn on
+  `speech_final`; flux maps `Update`→partial, `EndOfTurn`→final.
+- The proxy sends `ProxyConfig` with the **actual** state, so if the socket
+  couldn't connect the client still shows the agent's user transcript instead of
+  suppressing it.
+- The frontend renders an italic/dimmed **interim** bubble that updates live, then
+  solidifies into a final user message. The agent's redundant `ConversationText`
+  for `role: user` is suppressed (assistant turns still come from the agent).
+- The connection is **best-effort** (its own try/except), so if the key can't
+  reach it the agent still works — you just lose live text.
 
-- Flux `TurnInfo` events are relayed to the browser re-tagged as `FluxTurnInfo`
-  (so they never collide with agent event types).
-- The frontend renders user speech from Flux: an italic/dimmed **interim** bubble
-  that updates on each `Update`, then solidifies into a final message on
-  `EndOfTurn`. The agent's redundant `ConversationText` for `role: user` is
-  suppressed to avoid duplicate bubbles; assistant turns still come from the
-  agent.
-- The Flux connection is **best-effort** — it's wrapped in its own try/except,
-  so if the key can't reach Flux the agent still works (you just lose live text).
-- Flux's `encoding`/`sample_rate` must match the agent's `audio.input` settings
-  in `main.py` (currently `linear16` @ 16 kHz).
+## Text-to-speech voices
+
+Just name a voice — there's **no aura/flux flag**. Any Deepgram voice works:
+classic `aura-2-*` or the next-gen `flux-*` (e.g. `flux-jack-en`). Both are served
+natively by the Voice Agent under provider type `deepgram` (see [Flux TTS + Voice
+Agent](https://developers.deepgram.com/docs/flux-tts/voice-agent)), so the **model
+name alone** selects the engine — no separate endpoint, no extra socket, no double
+billing.
+
+`DEFAULT_VOICE` in `.env` is the fallback; **an explicit voice in config wins:**
+
+- **Multi-agent mode:** `DEFAULT_VOICE` is the orchestrator's `default_voice`. Each
+  `Agent.voice` in the scenario file overrides it; an agent that omits `voice` inherits
+  the current one (seamless). So you can mix — e.g. `triage` = `aura-2-asteria-en`,
+  `tech` = `aura-2-orion-en`, `billing` omits `voice` to stay on triage's.
+- **Scenario mode:** `apply_default_voice()` only fills in `DEFAULT_VOICE` when the
+  scenario JSON doesn't already name a speak voice — the scenario's own voice wins.
+
+The active-agent badge shows whichever voice is active.
+
+> ⚠️ **Flux voices can't change mid-session yet.** The Voice Agent applies a
+> mid-session `UpdateSpeak` only for **aura** voices; for **flux** voices it acks
+> `SpeakUpdated` but keeps the voice set in the initial `Settings` (verified against
+> the live API by pitch analysis). Practical consequence for the multi-agent demo,
+> where transfers switch voice via `UpdateSpeak`:
+> - **Want distinct per-agent voices?** Use `aura-2-*` — those switch correctly on
+>   transfer.
+> - **Want Flux quality?** Use a **single** flux voice for the whole session (set it
+>   on the entry agent / `DEFAULT_VOICE`; don't give agents differing flux voices —
+>   the change won't be heard).
+>
+> This is a Deepgram-side limitation; revisit when mid-session flux switching ships.

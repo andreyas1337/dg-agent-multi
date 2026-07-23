@@ -1,136 +1,107 @@
-# Multi-Agent Voice Architecture with Mid-Session Updates
+# Multi-Agent Voice Agents with Mid-Session Updates
 
-A multi-agent voice system handles one call with several specialized behaviors:
-a router, a billing specialist, a technical specialist, instead of one overloaded
-prompt. On Deepgram you can build this **without opening a new session per agent**.
-Keep one [Voice Agent](https://developers.deepgram.com/docs/voice-agent) session
-open for the whole call and reconfigure it mid-session with the `UpdateThink`,
-`UpdateSpeak`, and `UpdatePrompt` commands.
+A multi-agent voice experience routes a single call through several specialized
+behaviors — for example a router, a billing specialist, and a technical
+specialist — instead of one large prompt that tries to do everything. Splitting
+the work keeps each behavior focused, easier to test, and cheaper to run, because
+each role can use the prompt, tools, and even the model best suited to it.
 
-A useful way to think about it: with this approach there isn't a fleet of separate
-agents, there is **one Voice Agent that switches roles** mid-call. That single
-detail is what keeps context and latency simple.
+There are two common ways to build this on the
+[Voice Agent API](https://developers.deepgram.com/docs/voice-agent):
 
-This page is a companion to the
-[Multi-Agent Architecture](https://developers.deepgram.com/docs/multi-agent-architecture)
-guide, which builds the same idea by opening a new agent session per agent and
-summarizing the conversation across each handoff. Both work; this page covers the
-mid-session alternative and when to prefer it.
+- **A new session per agent** — open a fresh Voice Agent session for each
+  behavior and carry context forward across handoffs. This is covered in
+  [Multi-Agent Architecture](https://developers.deepgram.com/docs/multi-agent-architecture).
+- **Mid-session updates** — keep one session open for the whole call and
+  reconfigure it in place as the conversation moves between behaviors. That is
+  what this page describes.
 
-> **TL;DR:** One WebSocket for the whole call. To switch roles, send `UpdateThink`
-> (new prompt + tools + model) and optionally `UpdateSpeak` (new voice). The
-> conversation history is kept **server-side**, so the next role already has the
-> full context: no summarizer, no reconnect, no dead air, and the swap is
-> measurably faster (roughly 4 to 5 times in our tests).
+## How it works
 
----
+A Voice Agent session is configured once, when it opens, with a `Settings`
+message. Mid-session updates use additional messages to change that configuration
+while the session stays connected:
 
-## Why mid-session updates?
+- Send [`UpdateThink`](https://developers.deepgram.com/docs/voice-agent-update-think)
+  to switch the active behavior — a new prompt, tools, and model in one atomic
+  change.
+- Send [`UpdateSpeak`](https://developers.deepgram.com/docs/voice-agent-update-speak)
+  to change the voice, if a role should sound different.
+- Send [`UpdatePrompt`](https://developers.deepgram.com/docs/voice-agent-update-prompt)
+  to append instructions to the current prompt without replacing it.
+- Send [`UpdateListen`](https://developers.deepgram.com/docs/voice-agent-update-listen)
+  to tune speech-to-text settings (such as keyterms) without a new session.
 
-The classic way to run multiple agents is to spin up a fresh Voice Agent session
-for each one. That works, but every handoff pays for:
+Because the session never closes, the conversation history is maintained
+server-side and is available to whichever configuration is active. Switching
+roles changes the *configuration*, not the conversation: the newly active role
+already has the full context of what was said before.
 
-- **Re-establishing the connection:** a new WebSocket, TLS handshake, and
-  `Settings` round trip before the next agent can speak.
-- **Re-passing context:** the new session starts empty, so you must summarize the
-  conversation (often with a separate LLM call) and inject it into the new prompt.
-- **Bridging audio:** the caller's media path must be kept alive across the gap or
-  they hear silence.
-
-Deepgram's Voice Agent API can instead **reconfigure the running session**:
-
-| Command | Replaces | Use for |
+| Command | What it changes | Typical use |
 |---|---|---|
-| [`UpdateThink`](https://developers.deepgram.com/docs/voice-agent-update-think) | provider + model + prompt + functions (atomic) | **switching roles** |
-| [`UpdateSpeak`](https://developers.deepgram.com/docs/voice-agent-update-speak) | the TTS voice | giving a role a distinct voice |
-| [`UpdatePrompt`](https://developers.deepgram.com/docs/voice-agent-update-prompt) | *appends* to the prompt (does not replace) | injecting dynamic context mid-role |
+| `UpdateThink` | provider, model, prompt, and functions (atomic) | switch to a different role |
+| `UpdateSpeak` | the TTS voice | give a role a distinct voice |
+| `UpdatePrompt` | appends to the current prompt | inject dynamic context within a role |
+| `UpdateListen` | tunable STT settings — keyterms, language hints, end-of-turn thresholds (not the model or version) | adapt recognition to the active role |
 
-Because the session never closes, the conversation transcript persists on
-Deepgram's side and is replayed to whichever model is active. Switching roles
-becomes "swap the brain," not "start a new call."
+Each Update is acknowledged (`ThinkUpdated`, `SpeakUpdated`, `PromptUpdated`,
+`ListenUpdated`). Note that `UpdateListen` can only tune the settings above — the
+STT **model and version are fixed for the session**; changing them (or the audio
+encoding or sample rate) requires a new session.
 
----
-
-## The Update commands
-
-### `UpdateThink` swaps provider + model + prompt + functions, atomically
-
-A single message replaces the entire think configuration mid-session and the
-server acknowledges with `ThinkUpdated`. Because provider and model are part of
-it, **each role can run its own model, even its own provider**: a cheap, fast
-router can hand off to a stronger specialist model mid-call. `UpdateSpeak` swaps
-the voice the same way; `UpdatePrompt` *appends* to the prompt without replacing
-it (handy for injecting dynamic context within a role).
-
-### Conversation history lives server-side, so there's no summarizer
-
-Because there is one continuous session, you **do not pass context yourself**.
-`UpdateThink` replaces the *configuration*, not the conversation. Whatever model
-is active sees the prior turns automatically.
-
-> In our testing this held even **across providers**: an Anthropic specialist
-> correctly recalled a customer's name that was only ever spoken to the
-> OpenAI-driven router before the handoff.
-
-This is the biggest practical difference from reconnect-based multi-agent, which
-needs a summarization step on every transfer.
-
----
-
-## Architecture overview
+## Architecture
 
 ```
-           Browser / phone  (mic + speaker)
-                           │
-                           │  audio in/out, continuous (never interrupted)
-                           ▼
+        Caller (mic + speaker, or phone leg)
+                       │
+                       │  audio in / out, continuous
+                       ▼
    ┌──────────────────────────────────────────────┐
-   │                   Your app                   │
-   │       route the call, swap the config        │
+   │                 Your application              │
+   │        routes the call, sends Updates         │
    └───────────────────────┬──────────────────────┘
-                           │
-                           │  on transfer(to):
-                           │    1. UpdateThink  (prompt + tools + model)
-                           │    2. UpdateSpeak  (voice, if the role sets one)
+                           │  on handoff:
+                           │    UpdateThink  (prompt + tools + model)
+                           │    UpdateSpeak  (voice, if the role changes it)
                            ▼
    ┌──────────────────────────────────────────────┐
-   │             Deepgram Voice Agent             │
-   │         (one session, never closed)          │
-   │                                              │
-   │         Listen  ->  Think  ->  Speak         │
-   │                                              │
-   │    conversation history kept server-side,    │
-   │     replayed to whatever model is active     │
+   │            Deepgram Voice Agent               │
+   │            (one session per call)             │
+   │                                               │
+   │          Listen  ->  Think  ->  Speak         │
+   │                                               │
+   │   conversation history kept server-side,      │
+   │    available to whichever role is active      │
    └──────────────────────────────────────────────┘
 ```
 
-Your app holds one socket open and sends Update commands. There is no second
-connection to manage, no audio to bridge between sessions, and no context to
-summarize.
+Your application keeps one socket open and sends Update messages as the call
+progresses. There is no second connection to manage and no context to carry
+between sessions.
 
----
+## Switching roles
 
-## Swapping roles: the basic approach
-
-You don't need any framework. Define each role as plain data (a prompt, the tools
-it can use, and optionally its own voice/model), give the model a function it can
-call to hand off, and on that call send the Update messages for the target role.
+Define each role as data — a prompt, the functions it can use, and optionally its
+own voice and model — and give the model a function it can call to hand off. When
+the model calls that function, send the Update messages for the target role.
 
 ```python
 import json
 
-# A "role" is just a think config (prompt + tools, optionally its own model) and
-# a voice. Omit the voice to keep the current one (the caller hears one person).
+# The model calls this to hand off. Its enum lists the reachable roles.
 TRANSFER = {
     "name": "transfer",
     "description": ("Hand the caller to another specialist: 'billing', 'tech', or "
-                    "'router'. Call this silently; the next specialist continues."),
+                    "'router'. Call this without saying anything; the next "
+                    "specialist continues the conversation."),
     "parameters": {"type": "object",
                    "properties": {"to": {"type": "string",
                                          "enum": ["billing", "tech", "router"]}},
                    "required": ["to"]},
 }
 
+# A role is a think config (prompt + tools, optionally its own model) and a voice.
+# Omit the voice to keep the current one, so the caller keeps hearing one person.
 ROLES = {
     "router": {
         "prompt": "You are the front desk for Acme Support. Route the caller to "
@@ -141,27 +112,24 @@ ROLES = {
     "billing": {
         "prompt": "You are continuing as the same assistant, now handling billing. "
                   "Do not reintroduce yourself. Use get_balance for balances.",
-        "voice": None,                       # inherit the current voice -> seamless
+        "voice": None,                       # inherit the current voice
         "functions": [GET_BALANCE, TRANSFER],
     },
     "tech": {
         "prompt": "You are a technical specialist. Introduce yourself in one short "
                   "sentence, then help troubleshoot.",
-        "voice": "aura-2-orion-en",          # its own voice -> distinct specialist
-        "provider": "anthropic",             # and its own model, on another provider
-        "model": "claude-sonnet-4-20250514",
+        "voice": "aura-2-orion-en",          # its own voice
+        "provider": "anthropic",             # and its own model / provider
+        "model": "claude-sonnet-4-5",
         "functions": [RUN_DIAGNOSTIC, TRANSFER],
     },
 }
-```
 
-Switching roles is two messages and their acknowledgements:
 
-```python
 async def switch_role(ws, target, current_voice):
     role = ROLES[target]
 
-    # 1. Swap the brain: prompt + tools + (optional) model.
+    # 1. Swap the behavior: prompt + tools + (optional) model, atomically.
     await ws.send(json.dumps({
         "type": "UpdateThink",
         "think": {
@@ -185,38 +153,93 @@ async def switch_role(ws, target, current_voice):
     return current_voice
 ```
 
-Then trigger it when the model calls your `transfer` function:
+Trigger the switch when the model calls the `transfer` function, then answer the
+function call so the newly active role produces the next turn:
 
 ```python
 if fn["name"] == "transfer":
     target = json.loads(fn["arguments"])["to"]
     current_voice = await switch_role(ws, target, current_voice)   # swap first
-    await ws.send(json.dumps({                                     # then answer the call
+    await ws.send(json.dumps({                                     # then answer
         "type": "FunctionCallResponse",
         "id": fn["id"], "name": "transfer",
         "content": json.dumps({"status": "transferred"}),
     }))
 ```
 
-That's the whole mechanism. Three details make it smooth:
+## Sequencing a handoff
 
-- **Swap before you answer the function call.** Answering the `transfer` call is
-  what triggers the model's next turn. Do the `UpdateThink`/`UpdateSpeak` first, so
-  by the time you answer, the *new* role speaks next, not the old one. Tell the
-  model (in the tool description) to hand off silently, and you avoid a repeated
-  "one moment" line or a double-greeting.
-- **Omit a role's voice to keep things seamless.** With no `UpdateSpeak`, the
-  caller keeps hearing the same voice, so a router that gains billing tools feels
-  like one assistant. Give a role its own voice to make it a distinct specialist.
-  Whether it introduces itself is just a matter of what its prompt says.
-- **Keep the socket fed.** The Voice Agent socket expects continuous audio; if it
-  goes quiet too long the server closes it. A live mic or phone leg covers this. If
-  your transport can go silent, send audio frames or `KeepAlive` messages,
-  including across the handoff.
+A handoff is a short, ordered exchange on the same socket. The order matters:
+answering the transfer function call is what makes the model take its next turn,
+so you want the new configuration in place *before* that happens.
 
----
+1. The active model calls `transfer`, and you receive a `FunctionCallRequest`. Do
+   not answer it yet.
+2. Send `UpdateThink` with the target role's prompt, tools, and model, and wait for
+   the `ThinkUpdated` acknowledgement.
+3. If the target role uses a different voice, send `UpdateSpeak` and wait for
+   `SpeakUpdated`. Skip this to keep the current voice.
+4. Answer the original call with `FunctionCallResponse`. The now-current role
+   produces the next turn.
 
-## Example conversation flow
+```
+transfer() called ─► FunctionCallRequest
+                         │   (hold the response)
+                         ▼
+                     UpdateThink ─► ThinkUpdated
+                         │
+                         ▼   (only if the voice changes)
+                     UpdateSpeak ─► SpeakUpdated
+                         │
+                         ▼
+                     FunctionCallResponse ─► new role speaks
+```
+
+When and how to queue the update:
+
+- **Send on one socket, in order, and wait for each acknowledgement**
+  (`ThinkUpdated`, then `SpeakUpdated`) before the next step. Don't send the
+  Update messages concurrently or assume they applied without the ack.
+- **An Update applies to the model's next turn, not to audio already in flight.**
+  Sending `UpdateThink` in the middle of a spoken turn won't rewrite that turn; it
+  takes effect on the following generation.
+- **Answer the transfer call last.** Answering it before the swap lands lets the
+  outgoing role produce another turn in its old configuration.
+- **Keep audio flowing during the handshake** so the session doesn't time out
+  while you wait for acknowledgements.
+- **For a spoken handoff line** ("let me hand you over"), play it after step 1 —
+  for example by injecting an agent message — and wait for its audio to finish
+  before step 3, so the new voice doesn't talk over it.
+
+## Structuring role prompts
+
+Each role's prompt is self-contained and scoped to that one role. A workable
+shape:
+
+- **Identity and scope.** Who the role is and what it handles: "You are a billing
+  specialist for Acme Support; handle charges, balances, and refunds."
+- **Continuation vs. introduction.** Because history is shared, decide whether the
+  role continues as the same assistant ("do not reintroduce yourself, just keep
+  helping") or presents itself as a distinct specialist ("introduce yourself in one
+  short sentence"). Pair this with the voice: same voice + continue reads as one
+  assistant; new voice + introduce reads as a separate specialist.
+- **Tool use.** Name the tools the role should use, tell it to rely on them for
+  facts instead of guessing, and have it ask for any value a tool needs (a rating,
+  a date, an amount) before making the call.
+- **Handoff conditions.** Describe when to hand off and to which role, and instruct
+  the model to do so by calling the transfer function. Do **not** tell it to
+  announce the transfer in words — a turn is either speech or a function call, so
+  narrating the handoff makes it speak instead of transferring (see Best
+  practices).
+- **Voice-first formatting.** Plain conversational text, numbers spelled as words,
+  one or two sentences per turn.
+
+Keep role prompts short. Routing lives in the transfer tool's target list, so a
+prompt only needs the handoff *conditions*, not the whole routing table — and
+because history is shared, a role does not need the earlier conversation restated
+in its prompt.
+
+## Example flow
 
 ```
 Agent (router, asteria voice):  Hi, thanks for calling Acme Support! How can I help?
@@ -226,77 +249,96 @@ Agent (billing, same voice):    Your balance is $1,234.56.   [get_balance]
 You:                            Actually my laptop won't turn on.
                                 [transfer to tech]      (UpdateThink + UpdateSpeak)
 Agent (tech, orion voice):      I'm technical support, let's take a look. [run_diagnostic]
-                                All systems look nominal; is it plugged in and charging?
+                                Everything looks nominal; is it plugged in and charging?
 ```
 
-`billing` answered without re-greeting (same perceived person), `tech` introduced
-itself in a new voice, and neither needed the customer's name re-stated: it was
-already in the shared history.
+`billing` answered without re-greeting, `tech` introduced itself in a new voice,
+and neither needed the caller's name repeated — it was already in the shared
+history.
 
----
+## Best practices
 
-## Advantages over reconnect-per-agent
+- **Sequence the handoff correctly.** Swap the configuration before answering the
+  transfer call, and wait for each acknowledgement — see
+  [Sequencing a handoff](#sequencing-a-handoff).
 
-| | Reconnect per agent | Mid-Session Update |
+- **Decide how the handoff sounds.** A model turn is either spoken text *or* a
+  function call, not both — so a role cannot both say "let me transfer you" and
+  call the transfer function in the same turn, and a prompt that asks it to
+  announce the handoff tends to make it speak and skip the call. Keep the transfer
+  function silent (state that in its description) and shape the experience instead:
+  - *Seamless:* don't change the voice; the same voice continues, so a router that
+    gains billing tools feels like one assistant.
+  - *Distinct specialist:* give the target its own voice and let its prompt
+    introduce it.
+  - *Announced:* to have the outgoing role say a line like "let me hand you over,"
+    have your application speak it (for example with an injected agent message)
+    after the silent transfer call and before the voice changes, so nothing is
+    talked over.
+
+- **Keep the socket fed.** The Voice Agent socket expects continuous audio; if it
+  goes quiet for too long the server closes it. A live mic or phone leg covers
+  this. If your transport can go silent, send audio frames or `KeepAlive`
+  messages, including across a handoff.
+
+- **Write prompts for speech.** Responses are read aloud verbatim, so instruct
+  each role to produce plain conversational text — no markdown, lists, or
+  bracketed stage directions — and to spell numbers as words.
+
+- **Gather tool inputs before calling tools.** When a function needs a detail from
+  the caller (a rating, a date, an amount), have the role ask for it and wait for
+  the answer before making the call, rather than assuming a value.
+
+## Considerations
+
+- **Shared history has no isolation.** Every role sees the earlier turns. This is
+  what removes the summarization step, but it means you cannot hide prior context
+  from a specific role. If a role must start from a clean slate, use a separate
+  session for it.
+
+- **The STT model and audio format are fixed for the session.** `UpdateListen` can
+  tune recognition mid-session (keyterms, language hints, end-of-turn thresholds),
+  but the speech-to-text model and version can't change — attempting to swap them
+  is rejected with a `Warning` (`UPDATE_LISTEN_UNSUPPORTED_FIELDS_CHANGED`) and the
+  current settings are kept. The input/output audio encoding and sample rate are
+  fixed too. Changing any of these requires a new session with a fresh `Settings`.
+
+- **History grows for the whole call.** Because context accumulates automatically,
+  very long calls build up tokens. For extended sessions, consider compacting
+  earlier context (for example with `UpdatePrompt`).
+
+- **Function-calling reliability varies by model.** A handoff depends on the active
+  model reliably emitting the `transfer` call. Test the behavior with each model
+  you route to, especially smaller or faster ones.
+
+## Choosing an approach
+
+Both approaches are valid; they trade off along a few axes.
+
+| | New session per agent | Mid-session updates |
 |---|---|---|
-| Sessions | new WebSocket each agent | **one**, whole call |
-| Conversation history | lost; must summarize + re-inject | **retained server-side** |
-| Extra context plumbing | summarizer LLM call per handoff | **none** |
-| Audio continuity | gap / dead air during reconnect | **uninterrupted** |
-| Per-role model / provider | yes (new `Settings`) | yes (`UpdateThink`) |
-| Handoff latency (measured*) | **~215 ms**, **plus summarizer + audio re-stream** | **~47 ms** |
-| Context isolation between roles | yes (fresh session) | no (shared history) |
+| Sessions per call | one per agent | one for the whole call |
+| Conversation history | starts empty; summarize and re-inject | retained server-side, shared |
+| Context isolation between roles | yes (each session is fresh) | no (roles share history) |
+| Audio continuity across handoff | media path must be bridged | uninterrupted |
+| Per-role model, provider, voice | yes (new `Settings`) | yes (`UpdateThink` / `UpdateSpeak`) |
+| Audio format / STT model per role | yes (new `Settings`) | fixed for the session |
+| Handoff steps | reconnect, `Settings`, and context re-injection | one or two Update round-trips |
 
-\* Measured with the sample's `latency_test.py` (8 iterations). Absolute numbers
-depend on network distance to the region; the ratio is what matters. The
-reconnect figure is connection + `Settings` to `SettingsApplied` only; it does
-**not** include the summarizer call or re-streaming audio, both of which a real
-reconnect handoff also pays and mid-session Update avoids. Seamless handoffs (no
-voice change) are even faster, just the `UpdateThink` round trip.
+Reach for a **new session per agent** when a role needs context isolation or a
+different audio profile. Reach for **mid-session updates** when you want one
+continuous conversation, no summarization step, and no audio gap at the handoff —
+the common case for routing, escalation, and specialist hand-offs.
 
----
+The mechanism is small enough to use directly. If you add many roles, it helps to
+factor the role table and the swap sequence into a helper — for example a role
+type plus a `switch_role()` that also derives the `transfer` tool's target list
+from each role's allowed destinations.
 
-## When to use which
-
-**Prefer mid-session Update** when you want the caller to experience one continuous
-conversation, low handoff latency, and minimal plumbing: the common case for
-routing, escalation, and specialist hand-offs.
-
-**Reconnect-per-agent** still makes sense when you need:
-
-- **Context isolation:** a role that must *not* see earlier turns (e.g.,
-  compliance, or a clean-slate sub-task). Shared server-side history is
-  all-or-nothing.
-- **A different audio profile:** `UpdateThink`/`UpdateSpeak` don't change the audio
-  encoding/sample rate or the STT model; a fresh `Settings` does.
-
-Two operational notes for the Update approach:
-
-- **History grows for the whole call.** It's automatic, but very long sessions
-  accumulate tokens; consider `UpdatePrompt`-based compaction for marathon calls.
-- **Function-calling reliability varies by model.** The handoff depends on the
-  model emitting the `transfer` call; test each model you route to.
-
----
-
-## Going further
-
-The code above is all you need. If you find yourself adding many roles, you'll
-probably want to factor the role table and the swap sequence into a small helper,
-for example a config type plus a `switch_role()` that also derives the `transfer`
-tool's target list from each role's allowed destinations.
-
-The sample in this repository includes one such helper (see `orchestrator.py`),
-along with a browser UI, a mic-free end-to-end test (`selftest.py`), and the
-latency benchmark (`latency_test.py`). Treat it as one example of organizing the
-mechanism, not a required structure.
-
----
-
-## Additional resources
+## Resources
 
 - [Voice Agent API](https://developers.deepgram.com/docs/voice-agent)
 - [`UpdateThink`](https://developers.deepgram.com/docs/voice-agent-update-think),
   [`UpdateSpeak`](https://developers.deepgram.com/docs/voice-agent-update-speak),
   [`UpdatePrompt`](https://developers.deepgram.com/docs/voice-agent-update-prompt)
-- [Multi-Agent Architecture (reconnect-based companion guide)](https://developers.deepgram.com/docs/multi-agent-architecture)
+- [Multi-Agent Architecture (new-session-per-agent approach)](https://developers.deepgram.com/docs/multi-agent-architecture)

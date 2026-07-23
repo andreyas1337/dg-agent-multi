@@ -7,6 +7,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
     /* ── Deepgram design tokens ────────────────────────────────────────────── */
     :root {
@@ -46,6 +47,8 @@
     /* ── Reset ─────────────────────────────────────────────────────────────── */
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
+    :root { --helper-w: 340px; }
+
     body {
       font-family: var(--dg-font-sans);
       font-size: 16px;
@@ -57,6 +60,16 @@
       align-items: center;
       min-height: 100vh;
       padding: 1.5rem;
+      transition: padding-right 0.25s ease;
+    }
+
+    /* When the call-script panel is open, reserve space on the right so the
+       centered card shifts left instead of being covered by the panel. */
+    body.helper-open { padding-right: calc(1.5rem + var(--helper-w)); }
+
+    /* Not enough room to push on small screens — let the panel overlay instead. */
+    @media (max-width: 900px) {
+      body.helper-open { padding-right: 1.5rem; }
     }
 
     /* ── Wordmark ───────────────────────────────────────────────────────────── */
@@ -335,6 +348,146 @@
       height: 1em;
       flex-shrink: 0;
     }
+
+    /* ── Collapsible call-script panel (right) ──────────────────────────────── */
+    .dg-helper {
+      position: fixed;
+      top: 0;
+      right: 0;
+      height: 100vh;
+      width: var(--helper-w);
+      max-width: 85vw;
+      background: var(--dg-bg-charcoal);
+      border-left: 0.125rem solid var(--dg-border-default);
+      box-shadow: var(--dg-shadow-lg);
+      display: flex;
+      flex-direction: column;
+      transform: translateX(0);
+      transition: transform 0.25s ease;
+      z-index: 20;
+    }
+    .dg-helper.collapsed { transform: translateX(100%); }
+
+    .dg-helper__toggle {
+      position: absolute;
+      left: -2.375rem;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 2.375rem;
+      height: 6rem;
+      background: var(--dg-bg-charcoal);
+      border: 0.125rem solid var(--dg-border-default);
+      border-right: none;
+      border-radius: var(--dg-radius-md) 0 0 var(--dg-radius-md);
+      color: var(--dg-text-muted);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.375rem;
+      writing-mode: vertical-rl;
+      text-orientation: mixed;
+      font-size: 0.6875rem;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+    .dg-helper__toggle:hover { color: var(--dg-text-default); }
+    .dg-helper__toggle svg { width: 0.875rem; height: 0.875rem; }
+
+    .dg-helper__header {
+      padding: 1rem 1.25rem;
+      border-bottom: 0.125rem solid var(--dg-border-default);
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      flex-shrink: 0;
+    }
+    .dg-helper__header h2 {
+      font-size: 0.875rem;
+      font-weight: 600;
+      letter-spacing: -0.01em;
+    }
+    .dg-helper__header svg { width: 1rem; height: 1rem; color: var(--dg-primary); }
+
+    .dg-helper__body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 1rem 1.25rem 2rem;
+      font-size: 0.8125rem;
+      line-height: 1.5;
+      color: var(--dg-text-fog);
+      scrollbar-width: thin;
+      scrollbar-color: var(--dg-border-pebble) transparent;
+    }
+    .dg-helper__body::-webkit-scrollbar { width: 4px; }
+    .dg-helper__body::-webkit-scrollbar-thumb {
+      background: var(--dg-border-pebble);
+      border-radius: 2px;
+    }
+
+    .dg-helper h3 {
+      font-size: 0.6875rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--dg-text-muted);
+      margin: 1.25rem 0 0.5rem;
+    }
+    .dg-helper h3:first-child { margin-top: 0; }
+    .dg-helper p { margin-bottom: 0.5rem; }
+    .dg-helper ul { list-style: none; display: flex; flex-direction: column; gap: 0.375rem; }
+    .dg-helper li {
+      padding: 0.5rem 0.625rem;
+      background: var(--dg-bg-almost-black);
+      border: 0.0625rem solid var(--dg-border-default);
+      border-radius: var(--dg-radius-md);
+    }
+    .dg-helper .say::before { content: "“"; color: var(--dg-text-muted); }
+    .dg-helper .say::after  { content: "”"; color: var(--dg-text-muted); }
+    .dg-helper .say { font-style: italic; }
+    .dg-helper .kv { color: var(--dg-text-default); }
+    .dg-helper .kv b { color: var(--dg-primary); font-weight: 600; }
+    .dg-helper .pills { flex-direction: row; flex-wrap: wrap; }
+    .dg-helper .pills li {
+      padding: 0.1875rem 0.5rem;
+      font-size: 0.75rem;
+      color: var(--dg-text-default);
+    }
+
+    /* Rendered markdown from the active scenario's call-script.md */
+    .dg-helper__body h1 { font-size: 1rem; font-weight: 600; color: var(--dg-text-default); margin: 0 0 0.5rem; letter-spacing: -0.01em; }
+    .dg-helper__body h2 { font-size: 0.8125rem; font-weight: 600; color: var(--dg-text-default); margin: 1.25rem 0 0.5rem; }
+    .dg-helper__body ol { list-style: none; counter-reset: step; display: flex; flex-direction: column; gap: 0.375rem; padding: 0; }
+    .dg-helper__body ol > li::before { counter-increment: step; content: counter(step) ". "; color: var(--dg-primary); font-weight: 600; }
+    .dg-helper__body a { color: var(--dg-secondary); text-decoration: none; }
+    .dg-helper__body a:hover { text-decoration: underline; }
+    .dg-helper__body strong { color: var(--dg-text-default); font-weight: 600; }
+    .dg-helper__body code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 0.75rem; background: var(--dg-bg-almost-black);
+      border: 0.0625rem solid var(--dg-border-default);
+      border-radius: var(--dg-radius-sm); padding: 0.0625rem 0.25rem;
+    }
+    .dg-helper__body blockquote {
+      margin: 0.5rem 0; padding: 0.5rem 0.75rem;
+      border-left: 0.1875rem solid var(--dg-border-pebble);
+      background: var(--dg-bg-almost-black); border-radius: var(--dg-radius-sm);
+      color: var(--dg-text-muted);
+    }
+    .dg-helper__body blockquote p:last-child { margin-bottom: 0; }
+    .dg-helper__body hr { border: none; border-top: 0.0625rem solid var(--dg-border-default); margin: 1rem 0; }
+    .dg-helper__body table { width: 100%; border-collapse: collapse; margin: 0.5rem 0; font-size: 0.75rem; }
+    .dg-helper__body th, .dg-helper__body td {
+      border: 0.0625rem solid var(--dg-border-default);
+      padding: 0.3125rem 0.5rem; text-align: left; vertical-align: top;
+    }
+    .dg-helper__body th { color: var(--dg-text-default); font-weight: 600; background: var(--dg-bg-almost-black); }
+    .dg-helper__note {
+      margin-top: 1.25rem;
+      font-size: 0.75rem;
+      color: var(--dg-text-muted);
+    }
   </style>
 </head>
 <body>
@@ -380,6 +533,24 @@
       </button>
     </div>
   </div>
+
+  <!-- Collapsible call-script panel (demo helper) -->
+  <aside class="dg-helper" id="helper">
+    <button class="dg-helper__toggle" id="helperToggle" onclick="toggleHelper()" aria-label="Toggle call script">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><line x1="8" y1="13" x2="16" y2="13"/><line x1="8" y1="17" x2="13" y2="17"/></svg>
+      Call script
+    </button>
+
+    <div class="dg-helper__header">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+      <h2>Call script</h2>
+    </div>
+
+    <!-- Rendered from the active scenario's call-script.md via GET /call-script -->
+    <div class="dg-helper__body" id="helperBody">
+      <p class="dg-helper__note">Loading call script…</p>
+    </div>
+  </aside>
 
   <script>
     // AudioWorklet processor — captures mic audio as PCM16 at the context's sample rate
@@ -477,12 +648,12 @@ registerProcessor('pcm-processor', PCMProcessor);
       return div;
     }
 
-    // ── Live user transcript (Flux) ───────────────────────────────────────────
-    // Flux TurnInfo events drive an interim bubble that updates as you speak and
-    // is finalized on EndOfTurn. `transcript` is the cumulative text of the turn.
+    // ── Live user transcript (interim) ────────────────────────────────────────
+    // The proxy normalizes nova-3/Flux into one Interim event {text, final}: each
+    // event updates a live bubble, and `final` solidifies it into a user message.
 
-    let interimEl = null;     // the in-progress user bubble, if any
-    let fluxInterim = false;  // actual interim state, from the proxy's ProxyConfig
+    let interimEl = null;      // the in-progress user bubble, if any
+    let interimActive = false; // actual interim state, from the proxy's ProxyConfig
 
     // ── Interim-results toggle (persisted; default seeded from the server) ────
     const interimToggle = document.getElementById('interimToggle');
@@ -493,7 +664,7 @@ registerProcessor('pcm-processor', PCMProcessor);
       if (pref === null) {
         try {
           const cfg = await fetch('/config').then(r => r.json());
-          pref = cfg.fluxInterimDefault ? '1' : '0';
+          pref = cfg.interimDefault ? '1' : '0';
         } catch (_) { pref = '0'; }
       }
       interimToggle.checked = pref === '1';
@@ -508,6 +679,39 @@ registerProcessor('pcm-processor', PCMProcessor);
       interimWrap.classList.toggle('disabled', !enabled);
     }
 
+    // ── Call-script panel (collapsed state persisted) ─────────────────────────
+    const helper = document.getElementById('helper');
+    if (localStorage.getItem('helperCollapsed') === '1') helper.classList.add('collapsed');
+
+    // Push the main card left only when the panel is both visible and expanded.
+    function syncHelperPush() {
+      const open = helper.style.display !== 'none' && !helper.classList.contains('collapsed');
+      document.body.classList.toggle('helper-open', open);
+    }
+    syncHelperPush();
+
+    // Load the ACTIVE scenario's call-script.md (served by GET /call-script) and
+    // render it into the panel — so the script always matches the running scenario.
+    (async function loadCallScript() {
+      try {
+        const res = await fetch('/call-script');
+        if (!res.ok) throw new Error('no call script');
+        const md = await res.text();
+        const render = window.marked ? (marked.parse || marked) : null;
+        document.getElementById('helperBody').innerHTML =
+          render ? render(md) : '<pre>' + esc(md) + '</pre>';
+      } catch (_) {
+        helper.style.display = 'none'; // no script for this scenario -> hide the panel
+      }
+      syncHelperPush();
+    })();
+
+    function toggleHelper() {
+      const collapsed = helper.classList.toggle('collapsed');
+      localStorage.setItem('helperCollapsed', collapsed ? '1' : '0');
+      syncHelperPush();
+    }
+
     function ensureInterimBubble() {
       if (!interimEl) {
         interimEl = addMessage('user', '');
@@ -516,26 +720,16 @@ registerProcessor('pcm-processor', PCMProcessor);
       return interimEl;
     }
 
-    function handleFlux(ev) {
-      const text = (ev.transcript || '').trim();
-      switch (ev.event) {
-        case 'StartOfTurn':
-        case 'Update':
-        case 'EagerEndOfTurn':
-        case 'TurnResumed':
-          if (!text) break;
-          ensureInterimBubble().querySelector('.bubble').textContent = text;
-          scrollTranscript();
-          break;
-        case 'EndOfTurn':
-          if (!interimEl && !text) break;
-          const el = ensureInterimBubble();
-          if (text) el.querySelector('.bubble').textContent = text;
-          el.classList.remove('interim'); // solidify into a final user message
-          interimEl = null;
-          scrollTranscript();
-          break;
+    function handleInterim(text, final) {
+      text = (text || '').trim();
+      if (!text && !final) return;
+      const el = ensureInterimBubble();
+      if (text) el.querySelector('.bubble').textContent = text;
+      if (final) {
+        el.classList.remove('interim'); // solidify into a final user message
+        interimEl = null;
       }
+      scrollTranscript();
     }
 
     function esc(s) {
@@ -576,7 +770,7 @@ registerProcessor('pcm-processor', PCMProcessor);
     function handleEvent(ev) {
       switch (ev.type) {
         case 'ProxyConfig':
-          fluxInterim = !!ev.fluxInterim;
+          interimActive = !!ev.interim;
           break;
         case 'AgentActive':
           // Entry agent (first event) just sets the badge; later events are
@@ -586,13 +780,13 @@ registerProcessor('pcm-processor', PCMProcessor);
           }
           setAgent(ev.agent, ev.voice, ev.model);
           break;
-        case 'FluxTurnInfo':
-          handleFlux(ev);
+        case 'Interim':
+          handleInterim(ev.text, ev.final);
           break;
         case 'ConversationText':
-          // When Flux interim is on, user turns are shown live (interim → final),
-          // so skip the agent's duplicate. Otherwise render the agent's transcript.
-          if (ev.role === 'user' && fluxInterim) break;
+          // When interim is on, user turns are shown live (interim → final), so
+          // skip the agent's duplicate. Otherwise render the agent's transcript.
+          if (ev.role === 'user' && interimActive) break;
           addMessage(ev.role, ev.content);
           break;
         case 'UserStartedSpeaking':
@@ -675,7 +869,7 @@ registerProcessor('pcm-processor', PCMProcessor);
       outputCtx?.close(); outputCtx = null;
       stopPlayback();
       interimEl = null;
-      fluxInterim = false;
+      interimActive = false;
       clearAgent();
       document.getElementById('agentModel').textContent = '';
       setToggleEnabled(true);

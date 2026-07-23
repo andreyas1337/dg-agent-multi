@@ -44,6 +44,7 @@ an optional `notify` callable for the UI.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import logging
@@ -58,14 +59,20 @@ ToolResult = Union[dict, Awaitable[dict]]
 
 _TRANSFER_TOOL = "transfer_to_agent"
 
-# Appended to the transfer TOOL description (not the agent's own prompt). Tells the
-# model to hand off silently — the receiving agent does all the talking, so the
-# transfer line is never spoken (and so never duplicated).
+# Appended to the transfer TOOL description (not the agent's own prompt). The model
+# must call the function with NO spoken text — a Voice Agent turn is either speech
+# OR a tool call, so any "let me transfer you" wording makes it talk instead of
+# calling the tool. For an AUDIBLE handoff line, set Agent.announce_transfer=True:
+# the ORCHESTRATOR injects the line (InjectAgentMessage) after the silent tool call
+# and waits for it to finish before swapping the voice (see _start_transfer).
 _TRANSFER_INSTRUCTION = (
     "\n\nWhen the customer's need matches one of these targets, call this function "
     "immediately and provide no spoken response. Do NOT tell the customer you are "
-    "transferring them or to hold on — the receiving agent continues the conversation."
+    "transferring them or to hold on — the handoff is handled for you."
 )
+
+# If an announced handoff's injected line produces no audio, don't wait forever.
+_ANNOUNCE_TIMEOUT = 6.0
 
 
 @dataclass
@@ -88,7 +95,7 @@ class Agent:
     the orchestrator sends exactly those, so each agent can run its OWN model.
 
     model        — LLM for this agent (e.g. "gpt-4o-mini", "gpt-4o",
-                   "claude-sonnet-4-20250514"). Omit to use the orchestrator default.
+                   "claude-sonnet-4-5"). Omit to use the orchestrator default.
     provider     — LLM provider type (e.g. "open_ai", "anthropic"). Omit to use the
                    orchestrator default's provider. Lets a cheap/fast router hand
                    off to a stronger specialist model — even across providers.
@@ -110,6 +117,8 @@ class Agent:
     greeting: str = ""
     tools: list[Tool] = field(default_factory=list)
     transfers_to: dict[str, str] = field(default_factory=dict)
+    announce_transfer: bool = False   # speak a handoff line before the voice swaps (vs silent)
+    handoff_line: str = ""            # the line to speak when announce_transfer (else a default)
 
 
 class Orchestrator:
@@ -134,15 +143,18 @@ class Orchestrator:
         self.notify = notify
         self.think_provider = think_provider
         self.listen_model = listen_model
+        # Fallback voice for an agent that declares none. A per-agent `voice`
+        # always takes priority over this.
         self.default_voice = default_voice
 
         self.current = entry
         # Whatever voice is currently playing; agents without their own voice keep it.
         self._voice_now = self._agents[entry].voice or default_voice
-        # Transfer state machine: None (idle) | "think" | "speak"
+        # Transfer state machine: None (idle) | "await_audio" | "think" | "speak"
         self._step: Optional[str] = None
         self._target: Optional[str] = None
         self._pending_call_id: Optional[str] = None
+        self._fallback_task: Optional[asyncio.Task] = None  # announced-handoff safety timer
 
     @property
     def voice_now(self) -> str:
@@ -229,6 +241,15 @@ class Orchestrator:
             for fn in ev.get("functions", []):
                 await self._on_function(fn)
 
+        elif self._step == "await_audio" and t in ("AgentAudioDone", "UserStartedSpeaking"):
+            # Either the handoff line finished, OR the caller barged in over it. Both
+            # mean "stop waiting and swap now": on barge-in the line is cut short and
+            # the incoming agent should handle what the caller just said, rather than
+            # sit idle until the fallback timer. (A barge-in may suppress
+            # AgentAudioDone, so we can't rely on that event alone.)
+            self._cancel_fallback()
+            await self._begin_swap()
+
         elif t == "ThinkUpdated" and self._step == "think":
             target_voice = self._agents[self._target].voice
             if target_voice and target_voice != self._voice_now:
@@ -280,23 +301,54 @@ class Orchestrator:
             return
 
         logger.info("transfer %s -> %s (%s)", self.current, target, args.get("reason"))
-        agent = self._agents[target]
         self._target = target
-        self._step = "think"
         self._pending_call_id = call_id
-        self.current = target
+        self._reason = args.get("reason", "")
 
-        # Swap the brain (and later the voice, if the target declares one) FIRST. We
-        # answer the tool call only after the swap, so the NEW agent generates the
-        # next utterance — no double talk. Whether it introduces itself is up to its
-        # own prompt.
+        outgoing = self._agents[self.current]
+        if outgoing.announce_transfer:
+            # Speak a handoff line in the OUTGOING agent's voice (injected, because a
+            # model turn is speech OR a tool call — it can't do both). Then hold the
+            # swap until that line's audio finishes so the new voice doesn't talk over
+            # it (see AgentAudioDone in handle).
+            line = outgoing.handoff_line or "One moment, let me hand you over."
+            await self.send({"type": "InjectAgentMessage", "message": line})
+            self._step = "await_audio"
+            self._fallback_task = asyncio.create_task(self._announce_fallback())
+        else:
+            await self._begin_swap()
+
+    async def _begin_swap(self) -> None:
+        """Swap the brain (and later the voice) toward the target. We answer the tool
+        call only after the swap, so the NEW agent generates the next utterance."""
+        self._fallback_task = None
+        self._step = "think"
+        self.current = self._target
+        agent = self._agents[self._target]
         await self.send({"type": "UpdateThink", "think": self._think_for(agent)})
         if self.notify:
             # Voice the caller will hear after this hop (target's own, or inherited).
             await self.notify(
-                {"type": "AgentActive", "agent": target, "voice": agent.voice or self._voice_now,
-                 "model": self._provider_for(agent).get("model"), "reason": args.get("reason", "")}
+                {"type": "AgentActive", "agent": self._target,
+                 "voice": agent.voice or self._voice_now,
+                 "model": self._provider_for(agent).get("model"),
+                 "reason": getattr(self, "_reason", "")}
             )
+
+    async def _announce_fallback(self) -> None:
+        """If an announced handoff never produces spoken audio, swap anyway."""
+        try:
+            await asyncio.sleep(_ANNOUNCE_TIMEOUT)
+            if self._step == "await_audio":
+                logger.warning("announced handoff: no audio seen, swapping anyway")
+                await self._begin_swap()
+        except asyncio.CancelledError:
+            pass
+
+    def _cancel_fallback(self) -> None:
+        if self._fallback_task and not self._fallback_task.done():
+            self._fallback_task.cancel()
+        self._fallback_task = None
 
     async def _finalize_transfer(self) -> None:
         await self._respond(self._pending_call_id, _TRANSFER_TOOL, {"status": "transferring"})
