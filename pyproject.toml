@@ -1,0 +1,15 @@
+[project]
+name = "dg-agent-second"
+version = "0.1.0"
+description = "Deepgram Voice Agent multi-agent sample (one session, mid-session role updates)"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "websockets>=12",
+    "python-dotenv",
+]
+
+# This is a runnable app, not a library — don't try to build/install it as a package.
+[tool.uv]
+package = false

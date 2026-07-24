@@ -19,41 +19,41 @@ The agents are configured in `scenarios/acme-support/acme_support.py`:
 
 ## Prerequisites
 
-- A Deepgram API key, set in `.env`:
+- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** (recommended) —
+  it manages Python and dependencies for you, identically on macOS, Linux, and
+  Windows. A plain `pip` path is in [Without uv](#without-uv) if you prefer.
+- A **Deepgram API key**.
 
-  ```
-  DEEPGRAM_API_KEY=your_api_key_here
-  ```
+Dependencies (`fastapi`, `uvicorn[standard]`, `websockets>=12`, `python-dotenv`) are
+declared in `pyproject.toml`; uv installs them automatically on first run.
 
-  (`.env.example` shows the expected format.)
+## Get started
 
-- Dependencies from `requirements.txt` (`fastapi`, `uvicorn[standard]`,
-  `websockets>=12`, `python-dotenv`). These are already installed in the
-  shared virtualenv one level up at `samples/py/.venv`.
+1. **Add your API key.** Copy the example env file, then edit `.env` and set
+   `DEEPGRAM_API_KEY`:
 
-## Running
+   ```bash
+   cp .env.example .env          # Windows PowerShell: Copy-Item .env.example .env
+   ```
 
-> **Note:** the virtualenv is **not** in this folder — it lives one directory
-> up at `samples/py/.venv`.
+2. **Run it** (uv creates a local `.venv` and installs deps on the first run — the
+   command is the same on Windows, macOS, and Linux):
 
-From this project directory:
+   ```bash
+   uv run uvicorn main:app --reload --port 8000
+   ```
 
-```bash
-../.venv/bin/uvicorn main:app --reload --port 8000
-```
+3. Open **http://127.0.0.1:8000** in your browser.
 
-Or activate the venv first:
+Configuration lives in `.env` (scenario, voice, interim transcripts, access
+password) — see the sections below and `.env.example`.
 
-```bash
-source ../.venv/bin/activate
-uvicorn main:app --reload --port 8000
-```
+### Without uv
 
-Then open **http://127.0.0.1:8000** in your browser.
+<details>
+<summary>pip + virtualenv</summary>
 
-### Fresh setup (no venv yet)
-
-If the shared venv is missing, create one and install the deps:
+**macOS / Linux**
 
 ```bash
 python3 -m venv .venv
@@ -61,6 +61,18 @@ source .venv/bin/activate
 pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
+
+**Windows (PowerShell)**
+
+```powershell
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+uvicorn main:app --reload --port 8000
+```
+
+`requirements.txt` mirrors `pyproject.toml` and is what the Docker image uses.
+</details>
 
 ## How it works
 
@@ -210,9 +222,9 @@ the `financial-advisory` qualifier.
   orchestrator.
 - **`selftest.py`** — mic-free end-to-end test (TTS-synthesized user speech):
   transfers fire, no duplicated lines, history retained (incl. cross-provider).
-  Run: `../.venv/bin/python selftest.py` (or `selftest.py smoke`).
+  Run: `uv run python selftest.py` (or `uv run python selftest.py smoke`).
 - **`latency_test.py`** — handoff-latency benchmark: mid-session Update vs
-  reconnect. `../.venv/bin/python latency_test.py [iterations]`
+  reconnect. `uv run python latency_test.py [iterations]`
   (`DG_AGENT_HOST=api.eu.deepgram.com` to test the EU region).
 
 Try it: ask "what's my balance?" — the assistant silently gains billing tools and
